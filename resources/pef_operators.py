@@ -11,8 +11,8 @@
 # ============================================================
 >>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
-CLE V3.8.2 PEF算子库扩展 — 11个E层算子
-从PEF算子库500+条中筛选适配，填补原始4大算子的检测盲区。
+CLE V3.8.2 PEF算子库扩展 — 13个E层算子（V3.9.2新增DangerousFunctionDetector+MallocNullCheckDetector）
+从PEF算子库500+条中筛选适配，填补原始4大算子的检测盲区。V3.9.2新增gets危险函数检测和malloc NULL检查追踪。
 """
 import re
 from typing import List, Dict
@@ -424,6 +424,96 @@ class RaceConditionDetector:
         return findings
 
 
+
+
+class DangerousFunctionDetector:
+    """E057 CWE适配: 危险函数检测（已被C11移除或存在已知安全缺陷）"""
+    DANGEROUS_FUNCTIONS = [
+        # 注意：strcpy/sprintf/strcat 已由 BufferOverflowDetector 覆盖，此处不重复检测
+        # (pattern, severity, description, suggestion)
+        (r'\bgets\s*\(', 'P0', 'gets()危险函数（已被C11标准移除，无边界检查，必然缓冲区溢出）', '使用fgets(buf, size, stdin)替代gets(buf)'),
+        (r'\bvsprintf\s*\(', 'P1', 'vsprintf()无边界限制', '使用vsnprintf(buf, size, fmt, ap)替代'),
+        (r'\bscanf\s*\([^)]*%s', 'P1', 'scanf()使用%s无宽度限制', '使用%Ns指定最大宽度（如%255s）'),
+        (r'\bgetwd\s*\(', 'P1', 'getwd()危险函数（无边界检查）', '使用getcwd(buf, size)替代'),
+        (r'\bcrypt\s*\(', 'P2', 'crypt()弱加密函数（已被标记为弃用）', '使用更安全的密码哈希算法（如bcrypt/Argon2）'),
+    ]
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            # 跳过注释行（简单判断：行首//或在/* */内）
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('*') or stripped.startswith('/*'):
+                continue
+            for pat, severity, desc, suggestion in self.DANGEROUS_FUNCTIONS:
+                if re.search(pat, line):
+                    findings.append({
+                        'event_id': f'DANGER_FUNC_{i+1}',
+                        'line': i+1,
+                        'severity': severity,
+                        'category': 'DANGEROUS_FUNCTION',
+                        'description': f'{desc}: {line.strip()[:80]}',
+                        'suggestion': suggestion
+                    })
+        return findings
+
+
+class MallocNullCheckDetector:
+    """E058 CWE-476适配: malloc/calloc/realloc返回值NULL检查追踪"""
+    ALLOC_FUNCTIONS = [
+        (r'(\w+)\s*=\s*(?:\([^)]*\)\s*)?malloc\s*\(', 'malloc'),
+        (r'(\w+)\s*=\s*(?:\([^)]*\)\s*)?calloc\s*\(', 'calloc'),
+        (r'(\w+)\s*=\s*(?:\([^)]*\)\s*)?realloc\s*\(', 'realloc'),
+    ]
+    # NULL检查的模式：if (var == NULL) / if (!var) / if (NULL == var) / if (var == 0)
+    NULL_CHECK_PATTERNS = [
+        r'if\s*\(\s*!?\s*{var}\s*\)',
+        r'if\s*\(\s*{var}\s*==\s*(?:NULL|nullptr|0)\s*\)',
+        r'if\s*\(\s*(?:NULL|nullptr|0)\s*==\s*{var}\s*\)',
+        r'if\s*\(\s*{var}\s*!=\s*(?:NULL|nullptr|0)\s*\)',
+    ]
+    CHECK_WINDOW = 5  # malloc后5行内检查NULL
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # 跳过注释行
+            if stripped.startswith('//') or stripped.startswith('*') or stripped.startswith('/*'):
+                continue
+
+            for alloc_pat, func_name in self.ALLOC_FUNCTIONS:
+                m = re.search(alloc_pat, line)
+                if m:
+                    var = m.group(1)
+                    # 检查后续CHECK_WINDOW行内是否有NULL检查
+                    has_null_check = False
+                    check_line = -1
+                    for j in range(i+1, min(i+1+self.CHECK_WINDOW, len(lines))):
+                        check_line_text = lines[j]
+                        for null_pat in self.NULL_CHECK_PATTERNS:
+                            if re.search(null_pat.format(var=re.escape(var)), check_line_text):
+                                has_null_check = True
+                                check_line = j+1
+                                break
+                        if has_null_check:
+                            break
+
+                    if not has_null_check:
+                        findings.append({
+                            'event_id': f'MALLOC_NULL_{i+1}',
+                            'line': i+1,
+                            'severity': 'P0',
+                            'category': 'NULL_POINTER_DEREF',
+                            'description': f'{func_name}()返回值未检查NULL: 变量{var}在第{i+1}行分配后{self.CHECK_WINDOW}行内无NULL检查，直接解引用可能导致空指针崩溃',
+                            'suggestion': f'在{func_name}后立即检查 if ({var} == NULL) {{ /* 错误处理 */ }}',
+                            'causal_chain': f'P[{func_name}] -> E[no NULL check] -> F[NULL pointer dereference]'
+                        })
+        return findings
+
 # ============================================================
 # 统一入口
 # ============================================================
@@ -441,6 +531,8 @@ ALL_OPERATORS = [
     IntegerOverflowDetector(),
     PathCoverageAnalyzer(),
     RaceConditionDetector(),
+    DangerousFunctionDetector(),
+    MallocNullCheckDetector(),
 ]
 
 def run_pef_operators(source_code: str) -> List[Dict]:
@@ -465,5 +557,6 @@ __all__ = [
     'MathPropertyVerifier', 'StringLiteralValidator', 'UnimplementedDeclDetector',
     'BufferOverflowDetector', 'UninitMemoryDetector', 'ResourceLeakDetector',
     'IntegerOverflowDetector', 'PathCoverageAnalyzer', 'RaceConditionDetector',
+    'DangerousFunctionDetector', 'MallocNullCheckDetector',
     'run_pef_operators', 'ALL_OPERATORS'
 ]

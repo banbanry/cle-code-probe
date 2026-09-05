@@ -161,6 +161,33 @@ CLEDeployer.run_audit(source_code)
 | DS_CONFLICT_LOW | 0.5 | SystemConfig |
 | DS_CONFLICT_HIGH | 0.75 | SystemConfig |
 
+## V3.9.2 算子迭代（2026-09-05 补充检测盲区）
+
+**背景**：第三方对照测试发现 CLE 在 gets 危险函数和 malloc NULL 检查上存在检测盲区，与基础正则 Linter 对照后确认需补充。
+
+**新增算子（2个，PEF算子库从12个扩展到14个）**：
+
+| 算子 | 编号 | 检测能力 | 严重级别 |
+|------|------|---------|---------|
+| `DangerousFunctionDetector` | E057 | gets/vsprintf/scanf(%s)/getwd/crypt 等危险函数检测 | P0-P2 |
+| `MallocNullCheckDetector` | E058 | malloc/calloc/realloc 返回值 NULL 检查追踪（上下文分析，5行窗口） | P0 |
+
+**关键设计**：
+- `DangerousFunctionDetector` 不重复检测 strcpy/sprintf/strcat（已由 `BufferOverflowDetector` 覆盖），只检测真正独特的危险函数
+- `MallocNullCheckDetector` 做上下文分析：malloc 后 5 行内检查是否有 `if (var == NULL)` / `if (!var)` / `if (NULL == var)` 等 NULL 检查模式，有检查则不告警（避免误报）
+- 两个算子均跳过注释行，避免误报
+
+**实测验证（5个标准测试样本）**：
+
+| 样本 | gets检测 | malloc NULL检测 | 不误报 |
+|------|---------|----------------|--------|
+| 01_basic_vuln.c | — | ✅ MALLOC_NULL_7 (P0) | — |
+| 03_dangerous_functions.c | ✅ DANGER_FUNC_10 (P0) | — | — |
+| 04_hardcoded_leak.c | — | ✅ MALLOC_NULL_11 (P0) | — |
+| 05_clean_code.c | — | — | ✅ 有NULL检查的malloc不误报 |
+
+**回归测试**：Byzantine 11/11 PASS，S5=0.0，healthy=True；注入验收 VERIFIED；新算子未破坏现有功能。
+
 ## V3.9.1 发行状态修订（2026-09-05 真实测试后）
 
 **发行包与文档差异声明（防文档漂移）：**
