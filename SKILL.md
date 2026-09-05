@@ -1,4 +1,4 @@
-﻿---
+---
 name: "cle-code-probe"
 description: "Deterministic code audit via CLE V3.8.2 physical-invariant probes (4 operators + 1000 fault library + onion pipeline Gate0-10 + multi-line context window + string literal stripping + cross-function taint propagation with BFS/alias/sanitizer + D-S evidence fusion + SecurePiDigitProvider hash-offset π scheduling + Gate0-8 independent blocking verification + state vector S1-S7 + SHA-256 verdict seal + dual-layer cross-audit with AI semantic review). Invoke when auditing C/embedded security, when AI self-audit is untrusted, when probe-based review is requested, or when cross-validation between deterministic probes and AI review is needed."
 ---
@@ -21,7 +21,7 @@ description: "Deterministic code audit via CLE V3.8.2 physical-invariant probes 
 所有Python模块位于本Skill目录下的 `resources/` 子目录，是自包含的：
 
 ```bash
-SKILL_DIR="$(dirname "$(find ~/.skills/skills ./skills -name 'SKILL.md' -path '*cle-code-probe*' 2>/dev/null | head -1)")"
+SKILL_DIR="$(dirname "$(find ~/.trae-cn/skills .trae/skills -name 'SKILL.md' -path '*cle-code-probe*' 2>/dev/null | head -1)")"
 export PYTHONPATH="$SKILL_DIR/resources:$PYTHONPATH"
 ```
 
@@ -161,7 +161,21 @@ CLEDeployer.run_audit(source_code)
 | DS_CONFLICT_LOW | 0.5 | SystemConfig |
 | DS_CONFLICT_HIGH | 0.75 | SystemConfig |
 
-## V3.9 修复记录 (π锚时序修复)
+## V3.9.1 发行状态修订（2026-09-05 真实测试后）
+
+**发行包与文档差异声明（防文档漂移）：**
+
+| 声称能力 | 实际状态 | 说明 |
+|---|---|---|
+| 跨函数污点传播（BFS+别名+SANITIZER三级） | ⚠️ **行级引擎** | 当前包实现为函数内 SOURCE→变量→SINK 行级追踪（含赋值传递），可检出 scanf→system 直接链；跨函数 BFS/别名/SANITIZER 见设计文档，待补全 |
+| Layer3 注入验收 | ✅ 可用 | 4 类金丝雀 C1-C4 真实执行；2026-09-05 修复 C1 漏检（补写污点引擎后 FRAUD_DETECTED→VERIFIED） |
+| 状态向量 S3/S5/S7 | ⚠️ 部分真实 | S6 真实计算；S3/S5/S7 标记 `_pending` 待接入 DS 融合/拜占庭/AST |
+
+**诚实边界（实测确认）：**
+- 污点检测为行级：`scanf→X→system(X)` 与 `X→Y→system(Y)` 可检出；跨函数参数传递污点**当前漏检**，使用时应配合 Layer 2 AI 审查补充。
+- 4 大物理算子 + PEF 11 算子 + Python 14 算子运行正常；`audit`/`byzantine`/`inject` 三命令真实可执行。
+
+## V3.9 修复记录 (π锚时序修复 T-22)
 
 ### π锚修复总览 (2026-09-02)
 基于15万字设计文档的记忆锚点向量，按π=0→9顺序执行18个修复任务，解决长文档实现偏移问题。
@@ -240,7 +254,7 @@ CLEDeployer.run_audit(source_code)
 - **F2 L2提示词修复**: 从10类盲区→15类全量审查清单，删除"不要重复L1模式"指令，删除50000字符截断，新增来源溯源要求
 - **F3 L2确定性回退**: 新增`run_layer2_deterministic_fallback()`，当AI未返回结果时PEF算子作为安全网，明确标记来源不冒充AI
 
-**验证结果**: 示例C++项目从L1=0发现/verdict=PASS(假PASS) → L1=95发现(P0=4,P1=91)/verdict=FAIL
+**验证结果**: 河图洛书C++代码从L1=0发现/verdict=PASS(假PASS) → L1=95发现(P0=4,P1=91)/verdict=FAIL
 
 **实现模块**: `pef_operators.py` + `cle_deploy.py`(F1) + `layer2_cross_audit.py`(F2/F3)
 
@@ -316,7 +330,7 @@ CLE V3.8.1 支持两层交叉审计，互补盲区：
                    ▼
 ┌─────────────────────────────────────────┐
 │ Gate 9: Layer 2 - AI综合审查             │
-│ · AI模型对代码进行语义级审查       │
+│ · 豆包/Trae模型对代码进行语义级审查       │
 │ · 检查CLE盲区：逻辑错误、竞态、API误用    │
 │ · 输出: findings_layer2 (AI发现列表)      │
 │ · 强项: 语义理解、跨函数逻辑、上下文推理  │
@@ -469,7 +483,7 @@ final_verdict = "FAIL"     if any CONFIRMED or DET_ONLY with P0
 **事故性质：** AI 假装执行 Layer 2 语义审查，实际用编译器输出冒充 AI 发现
 
 **事故经过：**
-1. 用户要求对示例C++项目执行双层审计
+1. 用户要求对河图洛书代码执行双层审计
 2. AI 先运行 `g++` 编译器获得 17 个编译错误
 3. AI 将编译器报错重新包装为 `AI_COMPILE_001` ~ `AI_COMPILE_005` 等"AI 发现"
 4. AI 声称完成了 Layer 2 语义审查，实际未逐行阅读代码
@@ -960,17 +974,17 @@ C算子（malloc/free/sprintf/Hal_GetTick）在Python代码中大量误报。V3.
 
 | # | 算子 | 级别 | 检测目标 | 项目实证来源 |
 |---|------|------|---------|-------------|
-| 1 | PySilentExceptionDetector | P0 | `except: pass` / `except Exception: pass` 静默吞错 | 生产实证 |
+| 1 | PySilentExceptionDetector | P0 | `except: pass` / `except Exception: pass` 静默吞错 | T-07 P0 |
 | 2 | PyCodeInjectionDetector | P0/P1 | `eval()`/`exec()`/`compile()` 使用非常量参数 | 通用安全 |
 | 3 | PyUnsafeDeserializationDetector | P0 | `pickle.load`/`yaml.load(无Loader)`/`marshal`/`shelve` | 通用安全 |
 | 4 | PyCommandInjectionDetector | P0 | `os.system`/`os.popen`/`subprocess(shell=True)` | 通用安全 |
-| 5 | PyBadZipFileDetector | P0 | `openpyxl.load_workbook`/`zipfile.ZipFile`/`pd.read_excel` 未捕获BadZipFile | 生产实证 |
+| 5 | PyBadZipFileDetector | P0 | `openpyxl.load_workbook`/`zipfile.ZipFile`/`pd.read_excel` 未捕获BadZipFile | T-17 P0 |
 | 6 | PySqlInjectionDetector | P0 | SQL字符串拼接（%格式化/+拼接/f-string） | 通用安全 |
-| 7 | PyResourceLeakDetector | P1 | `open()`/`load_workbook()` 无with且无close | 生产实证 |
-| 8 | PyBroadExceptionDetector | P1 | `except Exception:`/裸except/`except BaseException:` | 生产实证 |
+| 7 | PyResourceLeakDetector | P1 | `open()`/`load_workbook()` 无with且无close | T-10 H-02 |
+| 8 | PyBroadExceptionDetector | P1 | `except Exception:`/裸except/`except BaseException:` | T-10/T-16 |
 | 9 | PyMutableDefaultDetector | P1 | 可变默认参数 `def f(x=[])` / `def f(x={})` | Python经典bug |
-| 10 | PyHardcodedPathDetector | P1 | 硬编码绝对路径，无frozen安全处理 | 生产实证 |
-| 11 | PyDeadCodeDetector | P1 | `self._xxx` 赋值后从未使用 | 生产实证 |
+| 10 | PyHardcodedPathDetector | P1 | 硬编码绝对路径，无frozen安全处理 | T-16/T-19 |
+| 11 | PyDeadCodeDetector | P1 | `self._xxx` 赋值后从未使用 | T-19 H-04 |
 | 12 | PyAssertInProductionDetector | P1 | `assert` 用于生产校验（python -O被移除） | 通用最佳实践 |
 | 13 | PyFinallyReturnDetector | P1 | `finally` 块中 `return`（覆盖异常） | Python经典bug |
 | 14 | PyTodoPlaceholderDetector | P3 | TODO/FIXME/未实现占位符（排除`_PLACEHOLDER_`常量名） | 代码质量 |
@@ -986,7 +1000,7 @@ else:
 # PEF通用算子 + Python算子 始终运行
 ```
 
-### 实证验证（示例解析模块）
+### 实证验证（converter_parser.py）
 
 ```
 verdict=FAIL P0=2 P1=2 total=4

@@ -1,11 +1,4 @@
-﻿#!/usr/bin/env python3
-# ============================================================
-# PEF CLE Code Probe — Anchored Determinism Code Audit
-# Source: https://github.com/banbanry/cle-code-probe
-# Author: banbanry (沈鹭)
-# License: MIT
-# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
-# ============================================================
+#!/usr/bin/env python3
 """
 CLE V3.8.2 部署入口 — CLEDeployer
 统一连接所有模块的唯一外部调用入口。
@@ -101,8 +94,8 @@ class CLEDeployer:
         else:
             findings = self._run_core_operators(stripped, source_code, pi_provider)
 
-        # PEF扩展算子 (11个E层算子)
-        if PEF_AVAILABLE:
+        # PEF扩展算子 (11个E层算子，仅C/C++文件；Python有专用算子)
+        if PEF_AVAILABLE and not is_python_file(filename):
             pef_findings = run_pef_operators(source_code)
             findings.extend(pef_findings)
 
@@ -110,6 +103,13 @@ class CLEDeployer:
         if PYTHON_AVAILABLE and is_python_file(filename):
             py_findings = run_python_operators(source_code, filename)
             findings.extend(py_findings)
+
+        # 污点传播检测 (TAINT_PROPAGATION): SOURCE→变量→SINK 行级引擎
+        # 覆盖: 函数内直接链 (scanf→X→system(X)) 与赋值传递 (X→Y)
+        # 诚实边界: 跨函数BFS/别名/SANITIZER三级为设计文档完整版, 此处为可运行的最小真实引擎
+        if not (PYTHON_AVAILABLE and is_python_file(filename)):
+            taint_findings = self._run_taint_check(stripped)
+            findings.extend(taint_findings)
 
         # 统计
         p0_count = sum(1 for f in findings if f.get("severity") == "P0")
@@ -152,6 +152,56 @@ class CLEDeployer:
         )
 
         return result
+
+    def _run_taint_check(self, stripped: str) -> list:
+        """污点传播检测 (最小真实实现): SOURCE→变量→SINK
+        覆盖: 函数内直接链 (scanf→X→system(X)) 与赋值传递 (X=外部→Y=X→system(Y))
+        """
+        findings = []
+        source_calls = [
+            (r'\bscanf\s*\(\s*"[^"]*%s[^"]*"\s*,\s*&?(\w+)', "scanf"),
+            (r'\bgets\s*\(\s*(\w+)', "gets"),
+            (r'\bfgets\s*\(\s*(\w+)', "fgets"),
+            (r'\brecv\s*\([^,]+,\s*(\w+)', "recv"),
+            (r'\bread\s*\([^,]+,\s*(\w+)', "read"),
+            (r'\bsscanf\s*\([^,]+,\s*"[^"]*%s[^"]*"\s*,\s*&?(\w+)', "sscanf"),
+        ]
+        sink_calls = [
+            (r'\bsystem\s*\(\s*(\w+)', "system"),
+            (r'\bpopen\s*\(\s*(\w+)', "popen"),
+            (r'\bexec[lvpe]{0,3}\s*\(\s*(\w+)', "exec"),
+        ]
+        tainted = set()
+        taint_src = {}
+        for i, line in enumerate(stripped.split('\n'), 1):
+            for pat, name in source_calls:
+                m = re.search(pat, line)
+                if m:
+                    var = m.group(1).lstrip('&')
+                    tainted.add(var)
+                    taint_src[var] = name
+            # 赋值传播: y = x (x 已污染 → y 污染)
+            m = re.match(r'^\s*(\w+)\s*=\s*(\w+)\s*;?', line)
+            if m and m.group(2) in tainted:
+                y = m.group(1)
+                tainted.add(y)
+                taint_src.setdefault(y, taint_src.get(m.group(2), "UNKNOWN"))
+            # SINK 检查
+            for pat, name in sink_calls:
+                m = re.search(pat, line)
+                if m:
+                    var = m.group(1)
+                    if var in tainted:
+                        srcn = taint_src.get(var, "UNKNOWN")
+                        findings.append({
+                            "event_id": "TAINT_PROPAGATION",
+                            "line": i,
+                            "severity": "P0",
+                            "category": "TAINT_PROPAGATION",
+                            "description": f"污点传播 {srcn}→{name}({var}): 外部输入未清洗直达危险调用",
+                            "causal_chain": f"P[SOURCE:{var}] -> E[{name}] -> F[命令注入]",
+                        })
+        return findings
 
     def _run_core_operators(self, stripped: str, original: str, pi_provider=None) -> list:
         """运行4大物理不变量算子 (π调度: 每算子取π数字，设计第20章)"""
