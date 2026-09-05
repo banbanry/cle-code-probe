@@ -1,4 +1,15 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
+=======
+﻿#!/usr/bin/env python3
+# ============================================================
+# PEF CLE Code Probe — Anchored Determinism Code Audit
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭)
+# License: MIT
+# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
+# ============================================================
+>>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
 CLE V3.8.2 公底层 (Single Source of Truth)
 所有模块的统一常量、数据类型、协议接口和配置管理。

@@ -1,4 +1,15 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
+=======
+﻿#!/usr/bin/env python3
+# ============================================================
+# PEF CLE Code Probe — Anchored Determinism Code Audit
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭)
+# License: MIT
+# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
+# ============================================================
+>>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
 CLE V3.8 Layer2 AI语义审查接口 + V1-V6反欺诈验证协议（设计第9章Gate9 + SKILL.md）
 AI实现由调用方提供，本模块定义接口规范、15类检查项清单、反欺诈验证协议。

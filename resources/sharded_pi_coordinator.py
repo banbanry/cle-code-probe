@@ -1,4 +1,15 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
+=======
+﻿#!/usr/bin/env python3
+# ============================================================
+# PEF CLE Code Probe — Anchored Determinism Code Audit
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭)
+# License: MIT
+# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
+# ============================================================
+>>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
 CLE V3.8 ShardedPiCoordinator — 分片π协调器（设计第24章L2172）
 全局π步数统一分配，所有分片共享同一π数字序列。

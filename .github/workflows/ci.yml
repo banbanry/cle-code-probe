@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  verify:
+    name: Module Integrity Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Run verification
+        run: python resources/cle_deploy.py verify
+
+  byzantine:
+    name: Byzantine Adversarial Tests (11 scenarios)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Run Byzantine tests
+        run: python resources/cle_deploy.py byzantine
+
+  audit-self:
+    name: Self-Audit (CLE probes its own code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Run self-audit
+        run: python resources/cle_deploy.py audit resources/cle_deploy.py
+
+  watermark-check:
+    name: Source Watermark Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check watermarks in all Python files
+        run: |
+          missing=0
+          for f in resources/*.py; do
+            if ! head -20 "$f" | grep -q "github.com/banbanry/cle-code-probe"; then
+              echo "MISSING WATERMARK: $f"
+              missing=1
+            fi
+          done
+          if [ $missing -eq 1 ]; then
+            echo "::error::Some files are missing source watermarks"
+            exit 1
+          fi
+          echo "All files have source watermarks"

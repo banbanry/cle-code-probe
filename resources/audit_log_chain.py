@@ -1,4 +1,15 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
+=======
+﻿#!/usr/bin/env python3
+# ============================================================
+# PEF CLE Code Probe — Anchored Determinism Code Audit
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭)
+# License: MIT
+# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
+# ============================================================
+>>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
 CLE V3.8 AuditLogChain — 审计日志链（设计第9章L1082 + PIMEM V2.5公式10.1）
 H_n = SHA-256(H_{n-1} ‖ n ‖ D_n ‖ content)，篡改检测。

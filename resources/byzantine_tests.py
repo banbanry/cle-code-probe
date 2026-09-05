@@ -1,4 +1,15 @@
+<<<<<<< HEAD
 #!/usr/bin/env python3
+=======
+﻿#!/usr/bin/env python3
+# ============================================================
+# PEF CLE Code Probe — Anchored Determinism Code Audit
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭)
+# License: MIT
+# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
+# ============================================================
+>>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 """
 CLE V3.8 ByzantineTestSuite — 拜占庭测试真实执行（设计第22章/第31章）
 11场景真实执行，S5=failed/total（修复B01: 之前直接print假结果）
