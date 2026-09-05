@@ -110,6 +110,9 @@ class CLEDeployer:
         if not (PYTHON_AVAILABLE and is_python_file(filename)):
             taint_findings = self._run_taint_check(stripped)
             findings.extend(taint_findings)
+            # 跨函数污点 BFS (V3.8.2 第四阶段可运行版): scanf->step2->sink->system
+            cross_findings = self._run_taint_cross_function(stripped)
+            findings.extend(cross_findings)
 
         # 统计
         p0_count = sum(1 for f in findings if f.get("severity") == "P0")
@@ -201,6 +204,113 @@ class CLEDeployer:
                             "description": f"污点传播 {srcn}→{name}({var}): 外部输入未清洗直达危险调用",
                             "causal_chain": f"P[SOURCE:{var}] -> E[{name}] -> F[命令注入]",
                         })
+        return findings
+
+    def _run_taint_cross_function(self, stripped: str) -> list:
+        """跨函数污点传播 (BFS 不动点): 函数调用图 + 形实参映射
+        链: scanf(&buf) -> step2(buf) -> sink(buf) -> system(buf)
+        """
+        findings = []
+        source_calls = [
+            (r'\bscanf\s*\(\s*"[^"]*%s[^"]*"\s*,\s*&?(\w+)', "scanf"),
+            (r'\bgets\s*\(\s*(\w+)', "gets"),
+            (r'\bfgets\s*\(\s*(\w+)', "fgets"),
+            (r'\brecv\s*\([^,]+,\s*(\w+)', "recv"),
+            (r'\bread\s*\([^,]+,\s*(\w+)', "read"),
+            (r'\bsscanf\s*\([^,]+,\s*"[^"]*%s[^"]*"\s*,\s*&?(\w+)', "sscanf"),
+        ]
+        sink_calls = [
+            (r'\bsystem\s*\(\s*(\w+)', "system"),
+            (r'\bpopen\s*\(\s*(\w+)', "popen"),
+            (r'\bexec[lvpe]{0,3}\s*\(\s*(\w+)', "exec"),
+        ]
+        # 1) 解析函数定义: 名 + 形参 + 函数体
+        funcs = {}
+        lines = stripped.split('\n')
+        i = 0
+        while i < len(lines):
+            m = re.match(
+                r'\s*(?:static\s+)?(?:void|int|char\s*\*?|long|short|float|double|size_t|unsigned\s+\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{',
+                lines[i])
+            if m:
+                name = m.group(1)
+                if name not in ("if", "for", "while", "switch"):
+                    params = [p.strip().split()[-1].lstrip('*') for p in m.group(2).split(',') if p.strip()]
+                    depth = 1
+                    j = i + 1
+                    body = []
+                    while j < len(lines) and depth > 0:
+                        depth += lines[j].count('{') - lines[j].count('}')
+                        if depth > 0:
+                            body.append(lines[j])
+                        j += 1
+                    funcs[name] = {"params": params, "body": body, "line": i + 1}
+                    i = j
+                    continue
+            i += 1
+        if not funcs:
+            return findings
+        # 2) 调用图: caller -> [(callee, args, line)]
+        calls = {}
+        for fname, finfo in funcs.items():
+            edges = []
+            for idx, line in enumerate(finfo["body"]):
+                for m in re.finditer(r'\b(\w+)\s*\(([^)]*)\)', line):
+                    callee = m.group(1)
+                    if callee in funcs and callee != fname:
+                        args = [a.strip().lstrip('&') for a in m.group(2).split(',') if a.strip()]
+                        edges.append((callee, args, finfo["line"] + idx))
+            calls[fname] = edges
+        # 3) BFS 不动点
+        tainted = {fname: set() for fname in funcs}
+        taint_src = {fname: {} for fname in funcs}
+        changed = True
+        iters = 0
+        while changed and iters < 12:
+            changed = False
+            iters += 1
+            for fname, finfo in funcs.items():
+                ts = tainted[fname]
+                src = taint_src[fname]
+                for idx, line in enumerate(finfo["body"]):
+                    for pat, sname in source_calls:
+                        m = re.search(pat, line)
+                        if m:
+                            var = m.group(1).lstrip('&')
+                            if var not in ts:
+                                ts.add(var)
+                                src[var] = sname
+                                changed = True
+                    m = re.match(r'^\s*(\w+)\s*=\s*(\w+)\s*;?', line)
+                    if m and m.group(2) in ts and m.group(1) not in ts:
+                        ts.add(m.group(1))
+                        src.setdefault(m.group(1), src.get(m.group(2), "UNKNOWN"))
+                        changed = True
+                # 调用边界: 实参污染 -> 形参污染
+                for callee, args, cline in calls.get(fname, []):
+                    cparams = funcs[callee]["params"]
+                    for jj in range(min(len(args), len(cparams))):
+                        if args[jj] in ts and cparams[jj] not in tainted[callee]:
+                            tainted[callee].add(cparams[jj])
+                            taint_src[callee].setdefault(cparams[jj], src.get(args[jj], "UNKNOWN"))
+                            changed = True
+        # 4) SINK 检查 (不动点后)
+        for fname, finfo in funcs.items():
+            for idx, line in enumerate(finfo["body"]):
+                for pat, sname in sink_calls:
+                    m = re.search(pat, line)
+                    if m:
+                        var = m.group(1)
+                        if var in tainted[fname]:
+                            srcn = taint_src[fname].get(var, "UNKNOWN")
+                            findings.append({
+                                "event_id": "TAINT_CROSS_FUNCTION",
+                                "line": finfo["line"] + idx,
+                                "severity": "P0",
+                                "category": "TAINT_PROPAGATION",
+                                "description": f"跨函数污点 {srcn}→{sname}({var}) [函数:{fname}]: 输入经调用链直达危险调用",
+                                "causal_chain": f"P[SOURCE:{var}] -> E[跨函数BFS] -> F[命令注入]",
+                            })
         return findings
 
     def _run_core_operators(self, stripped: str, original: str, pi_provider=None) -> list:

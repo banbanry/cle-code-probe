@@ -167,7 +167,7 @@ CLEDeployer.run_audit(source_code)
 
 | 声称能力 | 实际状态 | 说明 |
 |---|---|---|
-| 跨函数污点传播（BFS+别名+SANITIZER三级） | ⚠️ **行级引擎** | 当前包实现为函数内 SOURCE→变量→SINK 行级追踪（含赋值传递），可检出 scanf→system 直接链；跨函数 BFS/别名/SANITIZER 见设计文档，待补全 |
+| 跨函数污点传播（BFS+别名+SANITIZER三级） | ✅ **跨函数 BFS 已实现**（2026-09-05） | 函数调用图 + 形实参映射 + 不动点迭代；`scanf→step2→sink→system` 三级链实测检出（TAINT_CROSS_FUNCTION, P0）。**别名分析/SANITIZER 三级阻断**仍待补全 |
 | Layer3 注入验收 | ✅ 可用 | 4 类金丝雀 C1-C4 真实执行；2026-09-05 修复 C1 漏检（补写污点引擎后 FRAUD_DETECTED→VERIFIED） |
 | 状态向量 S3/S5/S7 | ⚠️ 部分真实 | S6 真实计算；S3/S5/S7 标记 `_pending` 待接入 DS 融合/拜占庭/AST |
 
