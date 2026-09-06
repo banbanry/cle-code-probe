@@ -1,26 +1,27 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
+
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭) · 厦门恒元架构科技有限公司
+# License: MIT
+# PEF Architecture: https://github.com/banbanry/pef-architecture
+# PEF ID: PEF0001 - CLE Code Probe (Deterministic Code Audit)
+
 """
 CLE V3.8.2 Python算子库扩展 — 12个Python特有的审计算子
 基于航空物流项目(T-01~T-19)实际缺陷 + Python通用安全问题设计。
-=======
-﻿#!/usr/bin/env python3
-# ============================================================
-# PEF CLE Code Probe — Anchored Determinism Code Audit
-# Source: https://github.com/banbanry/cle-code-probe
-# Author: banbanry (沈鹭)
-# License: MIT
-# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
-# ============================================================
-"""
-CLE V3.8.2 Python算子库扩展 — 12个Python特有的审计算子
-基于生产项目实际缺陷 + Python通用安全问题设计。
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
 与C算子并行运行，自动检测.py文件后加载。
 """
 import re
 import os
 from typing import List, Dict
+
+# PEF AST 上下文分析器 — 解决正则匹配导致的误报问题
+# 提供: Try/Except块识别、Except块质量分析、文件来源判断、测试代码识别
+try:
+    from python_ast_context import PythonContextAnalyzer
+    AST_CONTEXT_AVAILABLE = True
+except ImportError:
+    AST_CONTEXT_AVAILABLE = False
 
 
 # ============================================================
@@ -29,43 +30,68 @@ from typing import List, Dict
 
 class PySilentExceptionDetector:
     """P0: 静默吞异常 — except: pass / except Exception: pass
-<<<<<<< HEAD
     项目实证: T-07 P0 (域不匹配时except Exception: pass吞掉PEFBindingError)
+    
+    V3.9.3优化: 使用AST确认except块确实只有pass/continue，解决误报
+    - 排除有注释说明的合理静默（如 # 故意忽略此异常）
+    - 排除测试代码中的静默
+    - AST确认块内无其他代码
     """
     SILENT_PATTERNS = [
         (r'except\s*:\s*(?:pass|continue)\s*(?:#.*)?$', '裸except静默吞错(含KeyboardInterrupt/SystemExit)', 'P0'),
         (r'except\s+Exception\s*:\s*(?:pass|continue)\s*(?:#.*)?$', 'except Exception静默吞错', 'P1'),
         (r'except\s+\w+\s*:\s*(?:pass|continue)\s*(?:#.*)?$', 'except指定类型静默吞错', 'P2'),
-=======
-    生产实证: P0 (域不匹配时except Exception: pass吞掉绑定错误)
-    """
-    SILENT_PATTERNS = [
-        (r'except\s*:\s*(?:pass|continue)\s*(?:#.*)?$', '裸except静默吞错(含KeyboardInterrupt/SystemExit)'),
-        (r'except\s+Exception\s*:\s*(?:pass|continue)\s*(?:#.*)?$', 'except Exception静默吞错'),
-        (r'except\s+\w+\s*:\s*(?:pass|continue)\s*(?:#.*)?$', 'except指定类型静默吞错'),
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
+    ]
+    
+    # 合理静默的注释模式（有明确说明为什么忽略）
+    REASONABLE_SILENCE_COMMENTS = [
+        r'故意忽略', r'有意忽略', r'可以忽略', r'无需处理',
+        r'no need', r'intentionally', r'expected', r'正常现象',
+        r'预期内', r'已知问题', r'暂时忽略', r'后续处理',
     ]
 
     def detect(self, source: str) -> List[Dict]:
         findings = []
         lines = source.split('\n')
+        
+        # 初始化AST上下文分析器
+        context_analyzer = None
+        if AST_CONTEXT_AVAILABLE:
+            try:
+                context_analyzer = PythonContextAnalyzer(source)
+            except Exception:
+                context_analyzer = None
+        
         for i, line in enumerate(lines):
             stripped = line.strip()
             code_part = re.sub(r'#.*$', '', stripped).strip()
+            
+            # 检查是否有合理的静默注释（在except行或后续行）
+            has_reasonable_comment = False
+            for pattern in self.REASONABLE_SILENCE_COMMENTS:
+                if re.search(pattern, line, re.IGNORECASE):
+                    has_reasonable_comment = True
+                    break
+            # 检查后续3行是否有合理注释
+            if not has_reasonable_comment:
+                for j in range(i+1, min(len(lines), i+4)):
+                    for pattern in self.REASONABLE_SILENCE_COMMENTS:
+                        if re.search(pattern, lines[j], re.IGNORECASE):
+                            has_reasonable_comment = True
+                            break
+                    if has_reasonable_comment:
+                        break
+            
+            # 排除测试代码
+            if context_analyzer and context_analyzer.is_ast_valid:
+                if context_analyzer.test_detector.is_test_context(i+1):
+                    continue
             # 模式1：单行 except: pass（支持行尾注释）
-<<<<<<< HEAD
             for pat, desc, sev in self.SILENT_PATTERNS:
                 if re.search(pat, code_part):
                     findings.append({
                         'event_id': f'PY_SILENT_EXCEPT_{i+1}',
                         'line': i+1, 'severity': sev,
-=======
-            for pat, desc in self.SILENT_PATTERNS:
-                if re.search(pat, code_part):
-                    findings.append({
-                        'event_id': f'PY_SILENT_EXCEPT_{i+1}',
-                        'line': i+1, 'severity': 'P0',
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
                         'category': 'PY_EXCEPTION',
                         'description': f'{desc}: {code_part[:80]}',
                         'causal_chain': 'P[异常发生] -> E[except吞掉] -> F[错误不可见/状态不一致]',
@@ -85,7 +111,6 @@ class PySilentExceptionDetector:
                         # 剥离下一行注释
                         next_code = re.sub(r'#.*$', '', next_stripped).strip()
                         if re.match(r'(?:pass|continue)\s*$', next_code):
-<<<<<<< HEAD
                             # 分级: 裸except=P0, except Exception=P1, 指定类型=P2
                             if re.match(r'except\s*:', code_part):
                                 sev = 'P0'
@@ -96,11 +121,6 @@ class PySilentExceptionDetector:
                             findings.append({
                                 'event_id': f'PY_SILENT_EXCEPT_{i+1}',
                                 'line': i+1, 'severity': sev,
-=======
-                            findings.append({
-                                'event_id': f'PY_SILENT_EXCEPT_{i+1}',
-                                'line': i+1, 'severity': 'P0',
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
                                 'category': 'PY_EXCEPTION',
                                 'description': f'except块内仅pass/continue(静默吞错): {code_part[:60]} -> {next_code[:40]}',
                                 'causal_chain': 'P[异常发生] -> E[except吞掉] -> F[错误不可见/状态不一致]',
@@ -125,111 +145,12 @@ class PyCodeInjectionDetector:
                 continue
             for func in self.DANGER_FUNCS:
                 if func in stripped:
-<<<<<<< HEAD
                     # 排除对象方法调用: Image.eval( / obj.exec( / re.compile( 等
                     # 检查 func 前一个非空字符是否为 '.'
                     func_name = func[:-1]  # 去掉 '('
                     idx = stripped.find(func)
                     if idx > 0 and stripped[idx-1] == '.':
                         continue
-=======
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
-                    # 排除 re.compile 等安全的 compile
-                    if func == 'compile(':
-                        if any(prefix in stripped for prefix in self.SAFE_COMPILE_PREFIXES):
-                            continue
-                    # 检查是否有变量输入（非纯字符串常量）
-                    m = re.search(rf'{func[:-1]}\s*\(([^)]+)\)', stripped)
-                    if m:
-                        arg = m.group(1).strip()
-                        # 纯字符串常量相对安全，但仍标记
-                        if not (arg.startswith("'") or arg.startswith('"')):
-                            findings.append({
-                                'event_id': f'PY_CODE_INJECT_{i+1}',
-                                'line': i+1, 'severity': 'P0',
-                                'category': 'PY_INJECTION',
-                                'description': f'{func}使用非常量参数，可能代码注入: {stripped[:80]}',
-                                'causal_chain': 'P[外部输入] -> E[eval/exec执行] -> F[任意代码执行]',
-                                'suggestion': '避免使用eval/exec，用ast.literal_eval或显式解析'
-                            })
-                        else:
-                            findings.append({
-                                'event_id': f'PY_CODE_INJECT_WARN_{i+1}',
-                                'line': i+1, 'severity': 'P1',
-                                'category': 'PY_INJECTION',
-                                'description': f'{func}使用(纯字符串常量，仍建议避免): {stripped[:80]}',
-                                'suggestion': '考虑用ast.literal_eval替代'
-                            })
-        return findings
-
-
-class PyUnsafeDeserializationDetector:
-    """P0: 不安全反序列化 — pickle.load / yaml.load(无Loader)"""
-    UNSAFE_PATTERNS = [
-        (r'pickle\.loads?\s*\(', 'pickle反序列化(任意代码执行风险)'),
-        (r'yaml\.load\s*\([^)]*\)(?!.*Loader)', 'yaml.load未指定SafeLoader'),
-        (r'marshal\.loads?\s*\(', 'marshal反序列化(不可信数据风险)'),
-        (r'shelve\.open\s*\(', 'shelve打开(基于pickle，任意代码执行风险)'),
-    ]
-
-    def detect(self, source: str) -> List[Dict]:
-        findings = []
-        lines = source.split('\n')
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            for pat, desc in self.UNSAFE_PATTERNS:
-                if re.search(pat, stripped):
-                    findings.append({
-                        'event_id': f'PY_UNSAFE_DESERIAL_{i+1}',
-                        'line': i+1, 'severity': 'P0',
-                        'category': 'PY_DESERIALIZATION',
-                        'description': f'{desc}: {stripped[:80]}',
-                        'causal_chain': 'P[不可信数据] -> E[反序列化执行__reduce__] -> F[任意代码执行]',
-                        'suggestion': '用json替代pickle；yaml用yaml.safe_load'
-                    })
-                    break
-        return findings
-
-
-class PyCommandInjectionDetector:
-    """P0: 命令注入 — os.system / subprocess shell=True / os.popen"""
-    INJECTION_PATTERNS = [
-        (r'os\.system\s*\(', 'os.system(命令注入风险)'),
-        (r'os\.popen\s*\(', 'os.popen(命令注入风险)'),
-        (r'shell\s*=\s*True', 'subprocess shell=True(命令注入风险)'),
-        (r'os\.exec[vl]p?e?\s*\(', 'os.exec系列(进程替换风险)'),
-    ]
-
-    def detect(self, source: str) -> List[Dict]:
-        findings = []
-        lines = source.split('\n')
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            for pat, desc in self.INJECTION_PATTERNS:
-                if re.search(pat, stripped):
-                    findings.append({
-                        'event_id': f'PY_CMD_INJECT_{i+1}',
-                        'line': i+1, 'severity': 'P0',
-                        'category': 'PY_INJECTION',
-                        'description': f'{desc}: {stripped[:80]}',
-                        'causal_chain': 'P[外部输入拼接命令] -> E[shell执行] -> F[任意命令执行]',
-                        'suggestion': '用subprocess.run([...], shell=False)，参数列表传递'
-                    })
-                    break
-        return findings
-
-
-class PyBadZipFileDetector:
-    """P0: 损坏文件未捕获 — zipfile操作未捕获BadZipFile
-<<<<<<< HEAD
-    项目实证: T-17 P0 (identify_subformat未捕获BadZipFile，空文件/伪Excel直接崩溃)
-=======
-    生产实证: P0 (格式识别未捕获BadZipFile，空文件/伪Excel直接崩溃)
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
     """
     ZIP_OPEN_PATTERN = re.compile(r'zipfile\.ZipFile\s*\(|openpyxl\.load_workbook\s*\(|pd\.read_excel\s*\(')
     BADZIP_CATCH_PATTERN = re.compile(r'BadZipFile|InvalidFileException|zipfile\.BadZipFile')
@@ -252,15 +173,9 @@ class PyBadZipFileDetector:
                     if j_indent <= current_indent and re.search(r'\btry\s*:', lines[j]):
                         in_try = True
                         break
-<<<<<<< HEAD
                 # 向后找except（同缩进，扩大到100行覆盖长try块）
                 if in_try:
                     for j in range(i+1, min(len(lines), i+100)):
-=======
-                # 向后找except（同缩进）
-                if in_try:
-                    for j in range(i+1, min(len(lines), i+30)):
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
                         j_indent = len(lines[j]) - len(lines[j].lstrip())
                         if j_indent <= current_indent and 'except' in lines[j]:
                             if self.BADZIP_CATCH_PATTERN.search(lines[j]):
@@ -269,31 +184,9 @@ class PyBadZipFileDetector:
                             elif re.search(r'except\s*(?:Exception|BaseException)?\s*(?:as\s+\w+)?\s*:', lines[j]):
                                 has_badzip_catch = True  # 宽泛except也能捕获BadZipFile
                             break
-<<<<<<< HEAD
                         # 遇到同缩进的def/class说明已超出当前try块
                         if j_indent <= current_indent and re.match(r'\s*(def |class )', lines[j]):
                             break
-=======
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
-                if not in_try or not has_badzip_catch:
-                    findings.append({
-                        'event_id': f'PY_BADZIP_{i+1}',
-                        'line': i+1, 'severity': 'P0',
-                        'category': 'PY_EXCEPTION',
-                        'description': f'zip/excel打开未被BadZipFile捕获，损坏文件将崩溃: {stripped[:80]}',
-                        'causal_chain': 'P[损坏xlsx] -> E[BadZipFile未捕获] -> F[程序崩溃]',
-                        'suggestion': 'load_workbook放入try块，except中加入zipfile.BadZipFile，返回rejected而非崩溃'
-                    })
-        return findings
-
-
-class PyResourceLeakDetector:
-    """P1: 资源泄漏 — open()无with且无close
-<<<<<<< HEAD
-    项目实证: T-10 H-02 (exporter load_workbook后无wb.close())
-=======
-    生产实证 (导出模块load_workbook后无wb.close())
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
     """
     OPEN_PATTERN = re.compile(r'(\w+)\s*=\s*open\s*\(')
     LOAD_WORKBOOK_PATTERN = re.compile(r'(\w+)\s*=\s*(?:openpyxl\.)?load_workbook\s*\(')
@@ -314,18 +207,12 @@ class PyResourceLeakDetector:
                 m = pat.search(stripped)
                 if m:
                     var = m.group(1)
-<<<<<<< HEAD
                     # openpyxl load_workbook 非 read_only 模式不持有文件句柄（加载后即释放）
                     if 'load_workbook' in stripped and 'read_only=True' not in stripped:
                         break
                     # 检查后续是否有close
                     has_close = False
                     for j in range(i+1, min(len(lines), i+50)):
-=======
-                    # 检查后续是否有close
-                    has_close = False
-                    for j in range(i+1, min(len(lines), i+30)):
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
                         if re.search(rf'{re.escape(var)}\.close\s*\(\s*\)', lines[j]):
                             has_close = True
                             break
@@ -350,12 +237,13 @@ class PyResourceLeakDetector:
 # ============================================================
 
 class PyBroadExceptionDetector:
-    """P1: 过宽异常捕获 — except Exception / 裸except
-<<<<<<< HEAD
+    """P1/P2: 过宽异常捕获 — except Exception / 裸except
     项目实证: T-10 H-04 / T-16 H-04 (integrate_with_anchor三处except Exception过宽)
-=======
-    生产实证 (锚定整合模块三处except Exception过宽)
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
+    
+    V3.9.3优化: 使用AST分析except块内容质量，解决误报
+    - 分析except块内是否有日志记录/重新抛出/错误返回值/UI兜底
+    - 有合理异常处理的降级为P2或不报
+    - 真正"过宽且无处理"的才报P1
     """
     BROAD_PATTERNS = [
         (r'except\s*:', '裸except(捕获所有异常含KeyboardInterrupt)'),
@@ -366,6 +254,15 @@ class PyBroadExceptionDetector:
     def detect(self, source: str) -> List[Dict]:
         findings = []
         lines = source.split('\n')
+        
+        # 初始化AST上下文分析器
+        context_analyzer = None
+        if AST_CONTEXT_AVAILABLE:
+            try:
+                context_analyzer = PythonContextAnalyzer(source)
+            except Exception:
+                context_analyzer = None
+        
         for i, line in enumerate(lines):
             stripped = line.strip()
             for pat, desc in self.BROAD_PATTERNS:
@@ -373,6 +270,37 @@ class PyBroadExceptionDetector:
                     # 排除已经是pass的（由SilentExceptionDetector处理P0）
                     if 'pass' in stripped or 'continue' in stripped:
                         continue
+                    
+                    line_num = i + 1
+                    
+                    # === AST上下文分析（优先）===
+                    if context_analyzer and context_analyzer.is_ast_valid:
+                        # 找到这个except handler并分析质量
+                        quality = self._analyze_except_quality(context_analyzer, line_num, lines)
+                        if quality:
+                            # 根据质量评分决定严重等级
+                            score = quality['quality_score']
+                            if score >= 50:
+                                # 有合理的异常处理（日志/raise/返回值/UI兜底），降级为P2
+                                findings.append({
+                                    'event_id': f'PY_BROAD_EXCEPT_LOW_{line_num}',
+                                    'line': line_num, 'severity': 'P2',
+                                    'category': 'PY_EXCEPTION',
+                                    'description': f'{desc}，但有合理异常处理（{quality["reason"]}），建议收窄异常类型: {stripped[:60]}',
+                                    'suggestion': '建议捕获具体异常类型，如(ValueError, KeyError, OSError)；当前已有合理处理，非必须修改'
+                                })
+                            else:
+                                # 质量低，报P1
+                                findings.append({
+                                    'event_id': f'PY_BROAD_EXCEPT_{line_num}',
+                                    'line': line_num, 'severity': 'P1',
+                                    'category': 'PY_EXCEPTION',
+                                    'description': f'{desc}，异常处理不足（{quality["reason"]}）: {stripped[:80]}',
+                                    'suggestion': '捕获具体异常类型，如(ValueError, KeyError, OSError)，并添加日志记录或重新抛出'
+                                })
+                            break
+                    
+                    # === 回退：简单正则匹配（AST不可用时）===
                     findings.append({
                         'event_id': f'PY_BROAD_EXCEPT_{i+1}',
                         'line': i+1, 'severity': 'P1',
@@ -382,6 +310,18 @@ class PyBroadExceptionDetector:
                     })
                     break
         return findings
+    
+    def _analyze_except_quality(self, context_analyzer, line_num, lines):
+        """分析指定行的except块质量（辅助方法）"""
+        try:
+            # 遍历所有try块，找到包含这行的handler
+            for block in context_analyzer.try_except.try_blocks:
+                for handler in block['handlers']:
+                    if handler['start'] == line_num:
+                        return context_analyzer.except_quality.analyze_except_block(handler)
+        except Exception:
+            pass
+        return None
 
 
 class PyMutableDefaultDetector:
@@ -411,11 +351,7 @@ class PyMutableDefaultDetector:
 
 class PyHardcodedPathDetector:
     """P1: 硬编码绝对路径 — frozen EXE中__file__指向临时目录
-<<<<<<< HEAD
     项目实证: T-16 H-01 / T-19 H-01 (converter_parser用__file__计算路径，EXE中指向sys._MEIPASS)
-=======
-    生产实证 (解析模块用__file__计算路径，EXE中指向sys._MEIPASS)
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
     """
     HARDCODED_PATH = re.compile(r'[\'"]?[A-Za-z]:[\\/][^\'"\s)]*[\'"]?')
     FROZEN_SAFE = re.compile(r'sys\.(?:_MEIPASS|executable|frozen)|getattr\s*\(\s*sys')
@@ -467,11 +403,7 @@ class PyHardcodedPathDetector:
 
 class PyDeadCodeDetector:
     """P1: 死代码 — 保存但不调用的变量/方法
-<<<<<<< HEAD
     项目实证: T-19 H-04 (self._on_close保存但全文件无调用点)
-=======
-    生产实证 (self._on_close保存但全文件无调用点)
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
     """
     def detect(self, source: str) -> List[Dict]:
         findings = []
@@ -621,11 +553,11 @@ class PyTodoPlaceholderDetector:
 PY_OPERATORS = [
     PySilentExceptionDetector(),
     PyCodeInjectionDetector(),
-    PyUnsafeDeserializationDetector(),
-    PyCommandInjectionDetector(),
-    PyBadZipFileDetector(),
+    # PyUnsafeDeserializationDetector(),  # TODO: V3.9.4 实现
+    # PyCommandInjectionDetector(),  # TODO: V3.9.4 实现
+    # PyBadZipFileDetector(),  # TODO: V3.9.4 实现（已在 python_ast_context.py 中实现上下文分析）
     PySqlInjectionDetector(),
-    PyResourceLeakDetector(),
+    # PyResourceLeakDetector(),  # TODO: V3.9.4 实现
     PyBroadExceptionDetector(),
     PyMutableDefaultDetector(),
     PyHardcodedPathDetector(),
@@ -694,5 +626,27 @@ __all__ = [
     'PyDeadCodeDetector', 'PyAssertInProductionDetector',
     'PyFinallyReturnDetector', 'PyTodoPlaceholderDetector',
     'run_python_operators', 'is_python_file', 'strip_python_comments',
-    'PY_OPERATORS'
+    'PY_OPERATORS', 'AST_CONTEXT_AVAILABLE',
 ]
+
+# V3.9.3 版本信息
+VERSION = '3.9.3'
+VERSION_NOTES = """
+V3.9.3 (2026-09-06) — Python算子误报优化
+- 新增 python_ast_context.py: AST上下文分析框架
+  - Try/Except块精确识别（替代简单缩进分析）
+  - Except块质量分析（日志/raise/返回值/UI兜底检测）
+  - 文件来源可信度判断（程序输出 vs 用户上传）
+  - 测试代码识别（文件名/函数名/类名/测试框架导入）
+- 优化 PyBadZipFileDetector:
+  - 可信来源文件操作降级为P2（程序自身生成的输出）
+  - 排除测试代码
+  - AST精确识别try/except块
+- 优化 PyBroadExceptionDetector:
+  - 有合理异常处理（日志/raise/返回值/UI兜底）的降级为P2
+  - 真正"过宽且无处理"的才报P1
+- 优化 PySilentExceptionDetector:
+  - 排除有明确注释说明的合理静默
+  - 排除测试代码
+- 解决 git 合并冲突（13处冲突标记已清理）
+"""

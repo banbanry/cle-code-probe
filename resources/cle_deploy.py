@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭) · 厦门恒元架构科技有限公司
+# License: MIT
+# PEF Architecture: https://github.com/banbanry/pef-architecture
+# PEF ID: PEF0001 - CLE Code Probe (Deterministic Code Audit)
+
 """
 CLE V3.8.2 部署入口 — CLEDeployer
 统一连接所有模块的唯一外部调用入口。

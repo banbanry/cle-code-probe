@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+
+# Source: https://github.com/banbanry/cle-code-probe
+# Author: banbanry (沈鹭) · 厦门恒元架构科技有限公司
+# License: MIT
+# PEF Architecture: https://github.com/banbanry/pef-architecture
+# PEF ID: PEF0001 - CLE Code Probe (Deterministic Code Audit)
+
 """
 CLE V3.8 720条特征库骨架数据（设计第11章L1091）
 分片：通用250(π0-3) + DOC100(π4) + MOD80(π5) + LLM120(π6) + WEB100(π7) + EVASION70(π8-9)

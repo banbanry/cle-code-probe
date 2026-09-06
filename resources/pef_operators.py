@@ -1,15 +1,11 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
-=======
-﻿#!/usr/bin/env python3
-# ============================================================
-# PEF CLE Code Probe — Anchored Determinism Code Audit
+
 # Source: https://github.com/banbanry/cle-code-probe
-# Author: banbanry (沈鹭)
+# Author: banbanry (沈鹭) · 厦门恒元架构科技有限公司
 # License: MIT
-# π-Anchor: SecurePiDigitProvider — source_hash + step → SHA-256 → π digit
-# ============================================================
->>>>>>> 40697f6ba8ebcb83298c6d271567c130edd448ba
+# PEF Architecture: https://github.com/banbanry/pef-architecture
+# PEF ID: PEF0001 - CLE Code Probe (Deterministic Code Audit)
+
 """
 CLE V3.8.2 PEF算子库扩展 — 13个E层算子（V3.9.2新增DangerousFunctionDetector+MallocNullCheckDetector）
 从PEF算子库500+条中筛选适配，填补原始4大算子的检测盲区。V3.9.2新增gets危险函数检测和malloc NULL检查追踪。
