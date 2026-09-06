@@ -538,7 +538,7 @@ def run_pef_operators(source_code: str) -> List[Dict]:
         try:
             findings = op.detect(source_code)
             all_findings.extend(findings)
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError, OSError, KeyError, IndexError) as e:
             all_findings.append({
                 'event_id': f'PEF_ERROR_{op.__class__.__name__}',
                 'line': 0, 'severity': 'INFO',

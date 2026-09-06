@@ -123,7 +123,7 @@ class Layer2Reviewer:
                 result = self.review_callback(source_code, findings_layer1, filename)
                 if isinstance(result, L2Result):
                     return result
-            except Exception:
+            except (TypeError, ValueError, RuntimeError, OSError, KeyError, IndexError):
                 pass
         # L2确定性回退（AI未返回有效结果时）
         return self._run_deterministic_fallback(source_code, findings_layer1)

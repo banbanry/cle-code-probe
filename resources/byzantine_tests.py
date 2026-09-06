@@ -237,7 +237,8 @@ class ByzantineTestSuite:
             from secure_pi_provider import SecurePiDigitProvider
             p = SecurePiDigitProvider("test", cache_size=10)
             for i in range(10):
-                assert p.next_digit() != -1
+                if not (p.next_digit() != -1):
+                    raise ValueError("Assertion failed")
             exhausted = p.next_digit() == -1
             passed = exhausted and p.is_exhausted()
         except ImportError:

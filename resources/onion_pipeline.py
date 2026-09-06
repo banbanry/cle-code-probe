@@ -127,7 +127,7 @@ class OnionPipeline:
         try:
             findings = op_func(lines, stripped)
             return GateResult(gate_id, self.GATE_NAMES[gate_id], True, findings or [])
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError, OSError, KeyError, IndexError) as e:
             # 单算子异常隔离: 捕获+GAMMA事件+不中断
             return GateResult(gate_id, self.GATE_NAMES[gate_id], True, [],
                               [f"{name}算子异常: {str(e)}→GAMMA隔离, 不中断"])

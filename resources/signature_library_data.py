@@ -150,6 +150,8 @@ if __name__ == "__main__":
     print(f"按π分片: {stats['by_pi']}")
     print(f"按严重级: {stats['by_severity']}")
     print(f"哈希完整性: {'OK' if integrity['integrity_ok'] else 'FAIL'}")
-    assert stats['total'] == 720, f"特征库数量错误: {stats['total']}"
-    assert integrity['integrity_ok'], "哈希校验失败"
+    if not (stats['total'] == 720):
+        raise ValueError(f"特征库数量错误: {stats['total']}")
+    if not (integrity['integrity_ok']):
+        raise ValueError("哈希校验失败")
     print("720条特征库骨架构建完成")
