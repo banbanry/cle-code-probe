@@ -109,6 +109,8 @@ class CLE_V38_Engine:
         if not is_py:
             # C核心算子（通过洋葱流水线）
             core_findings = self._run_core_operators(source_code, stripped)
+            for _f in core_findings:
+                _f["source"] = "CORE"  # Task8
             findings.extend(core_findings)
 
         if self._pef_available:
@@ -116,6 +118,16 @@ class CLE_V38_Engine:
 
         if is_py and self._python_available:
             findings.extend(self._run_python(source_code, filename))
+
+        # Task8 收口聚合：置信分级 + 算子级冲突检测（LOW 只降级/分桶，不删除；不改 verdict）
+        try:
+            from ds_evidence_fusion import annotate_confidence, detect_conflict
+            findings = annotate_confidence(findings)
+            conflicts = detect_conflict(findings)
+            low_confidence_findings = [f for f in findings if f.get("low_confidence")]
+        except Exception:
+            conflicts = []
+            low_confidence_findings = []
 
         # 统计
         p0 = sum(1 for f in findings if f.get("severity") == "P0")
@@ -152,6 +164,8 @@ class CLE_V38_Engine:
             "p0_count": p0,
             "p1_count": p1,
             "findings": findings,
+            "low_confidence_findings": low_confidence_findings,
+            "conflicts": conflicts,
             "source_hash": source_hash,
             "pi_step": pi_step,
             "pi_digit": pi_digit,

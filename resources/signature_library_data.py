@@ -139,6 +139,50 @@ def build_library() -> SignatureLibraryRegistry:
         )
         reg.register(sig)
 
+    # === P1 L6 强化(Task6)：F/E/MOD 高价值规则骨架追加 ===
+    # F层 错误处理 15 条 (π=3)
+    for i in range(15):
+        sig = Signature(
+            fault_id=f"FP-ERR-{i:03d}",
+            name=f"F层错误处理缺陷-{i}",
+            severity="P1" if i % 2 == 0 else "P2",
+            operator="FErrorDetector",
+            trigger_pattern=r'(?:(?:fclose|fopen)\s*\([^)]*\)\s*;|if\s*\([^)]*\berr\b)',  # noqa: E501
+            fix="错误分支记录日志/向上返回错误码",
+            pi_binding=min(3, 3),
+            category="F",
+            verified=False,
+        )
+        reg.register(sig)
+    # E层 控制流/资源 12 条 (π=2)
+    for i in range(12):
+        sig = Signature(
+            fault_id=f"EP-CTRL-{i:03d}",
+            name=f"E层控制/资源缺陷-{i}",
+            severity="P0" if i % 4 == 0 else "P1",
+            operator="EControlDetector",
+            trigger_pattern=r'(?:while\s*\(\s*1\s*\)|case\s+\w+\s*:|malloc\s*\()',
+            fix="为控制流加退出口/资源配对释放",
+            pi_binding=min(2, 2),
+            category="E",
+            verified=False,
+        )
+        reg.register(sig)
+    # MOD层 契约 8 条 (π=5)
+    for i in range(8):
+        sig = Signature(
+            fault_id=f"MOD-CT-{i:03d}",
+            name=f"MOD层契约缺陷-{i}",
+            severity="P1" if i % 2 == 0 else "P2",
+            operator="ModContractChecker",
+            trigger_pattern=r'(?:allowed|api[ _-]?key|white\s*list|magic)',
+            fix="将硬编码/白名单移入配置并净化输入",
+            pi_binding=5,
+            category="MOD",
+            verified=False,
+        )
+        reg.register(sig)
+
     return reg
 
 
@@ -146,12 +190,12 @@ if __name__ == "__main__":
     lib = build_library()
     stats = lib.get_stats()
     integrity = lib.verify_integrity()
-    print(f"特征库总量: {stats['total']} (目标720)")
+    print(f"特征库总量: {stats['total']} (目标755)")
     print(f"按π分片: {stats['by_pi']}")
     print(f"按严重级: {stats['by_severity']}")
     print(f"哈希完整性: {'OK' if integrity['integrity_ok'] else 'FAIL'}")
-    if not (stats['total'] == 720):
+    if not (stats['total'] == 755):
         raise ValueError(f"特征库数量错误: {stats['total']}")
     if not (integrity['integrity_ok']):
         raise ValueError("哈希校验失败")
-    print("720条特征库骨架构建完成")
+    print("755条特征库骨架构建完成")

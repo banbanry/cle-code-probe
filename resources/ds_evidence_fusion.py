@@ -229,3 +229,89 @@ def final_verdict(masses: List[Dict[str, float]], p0_count: int, ai_p0_count: in
     if s3 < 0.8:
         return "GAMMA"
     return "REVIEW"
+
+
+# ============================================================
+# CLE P1 强化（Task8）：告警置信分级 + 算子级冲突检测
+# 独立于 Mass 层融合，只影响排序与审查优先级，不改 verdict 语义
+# ============================================================
+
+# source 判定为"弱证据源"（不构成独立证据）的来源
+_LOW_EVIDENCE_SOURCES = {
+    "EXTEND",
+    "L2_DETERMINISTIC_FALLBACK",
+    "OPERATOR_ERROR",
+}
+
+
+def _independent_sources(findings: List[Dict]) -> Set[str]:
+    """提取一组 findings 中的独立证据源集合（剔除弱证据源与空值）"""
+    return {
+        f.get("source", "")
+        for f in findings
+        if f.get("source") and f["source"] not in _LOW_EVIDENCE_SOURCES
+    }
+
+
+def annotate_confidence(findings: List[Dict]) -> List[Dict]:
+    """按 (line, category) 聚合给每条 finding 打 confidence
+
+    - HIGH: ≥2 个不同独立证据源（互证）
+    - MED : 仅单独立证据源
+    - LOW : 仅 EXTEND/L2_DETERMINISTIC_FALLBACK/OPERATOR_ERROR 命中或来源缺失
+            → 降级 severity 为 INFO 并标 low_confidence=True（保留不删除）
+    就地打字段并返回原列表。
+    """
+    groups: Dict[Tuple, List[Dict]] = {}
+    for f in findings:
+        key = (f.get("line", 0), f.get("category", ""))
+        groups.setdefault(key, []).append(f)
+
+    for group in groups.values():
+        srcs = _independent_sources(group)
+        if len(srcs) >= 2:
+            conf, low = "HIGH", False
+        elif len(srcs) == 1:
+            conf, low = "MED", False
+        else:
+            conf, low = "LOW", True
+        for f in group:
+            f["confidence"] = conf
+            if low:
+                f["low_confidence"] = True
+                f["severity"] = "INFO"
+            else:
+                f["low_confidence"] = False
+    return findings
+
+
+_CONFLICT_SEV_HIGH = ("P0", "p0", "critical", "CRITICAL")
+_CONFLICT_SEV_LOW = ("P2", "p2", "low", "INFO", "info")
+
+
+def detect_conflict(findings: List[Dict]) -> List[Dict]:
+    """检测算子级结论矛盾（同一 line/category 上多独立源、severity 高低并存）。
+
+    独立于 Mass 层冲突系数 K。产出 List[Dict] 供返回 dict 的 conflicts 字段。
+    """
+    groups: Dict[Tuple, List[Dict]] = {}
+    for f in findings:
+        key = (f.get("line", 0), f.get("category", ""))
+        groups.setdefault(key, []).append(f)
+
+    conflicts = []
+    for key, group in groups.items():
+        srcs = _independent_sources(group)
+        if len(srcs) < 2:
+            continue
+        sev_set = set(g.get("severity", "") for g in group)
+        has_high = any(s in sev_set for s in _CONFLICT_SEV_HIGH)
+        has_low = any(s in sev_set for s in _CONFLICT_SEV_LOW)
+        if has_high and has_low:
+            conflicts.append({
+                "key": f"{key[0]}:{key[1]}",
+                "sources": sorted(srcs),
+                "severities": sorted(sev_set),
+                "note": "operator级矛盾：同一位置独立证据源结论高低并存，独立于Mass K",
+            })
+    return conflicts

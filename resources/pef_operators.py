@@ -9,6 +9,7 @@
 """
 CLE V3.8.2 PEF算子库扩展 — 13个E层算子（V3.9.2新增DangerousFunctionDetector+MallocNullCheckDetector）
 从PEF算子库500+条中筛选适配，填补原始4大算子的检测盲区。V3.9.2新增gets危险函数检测和malloc NULL检查追踪。
+P1阶段L6强化(Task6)：新增22个C/C++ F/E/MOD层高价值算子，可运行规则目录扩至~40条。
 """
 import re
 from typing import List, Dict
@@ -510,6 +511,494 @@ class MallocNullCheckDetector:
                         })
         return findings
 
+
+# ============================================================
+# P1阶段L6强化(Task6)：F/E/MOD 层高价值 C/C++ 算子
+# 统一沿用 finding 字段: event_id/line/severity/category/description/suggestion
+# 新类别: F_ERROR / E_CONTROL / E_RESOURCE / MOD_CONTRACT
+# ============================================================
+
+# ---------- F层 错误处理 (category=F_ERROR) ----------
+
+class CReturnValueIgnoredDetector:
+    """F层: 系统调用/文件IO返回值被忽略（独立语句形式调用）"""
+    IGNORED_CALLS = (
+        r'\b(?:fopen|open|fread|fwrite|read|write|close|remove|rename)\s*\([^)]*\)\s*;',
+    )
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+            for pat in self.IGNORED_CALLS:
+                if re.search(pat, line):
+                    # 已是 if( 包裹则视为已检查
+                    if re.search(r'if\s*\([^)]*\)', line) and re.search(pat, line[line.index('if'):] if 'if' in line else ''):
+                        continue
+                    findings.append({
+                        'event_id': f'C_RET_IGNORE_{i+1}', 'line': i+1, 'severity': 'P2',
+                        'category': 'F_ERROR',
+                        'description': f'返回值被忽略: {stripped[:80]}',
+                        'causal_chain': f'P[call] -> E[ignore return] -> F[错误不可见]',
+                        'suggestion': '检查返回值，为负/异常时处理（如 if (fclose(fp) != 0) ...）',
+                    })
+                    break
+        return findings
+
+
+class CSensitiveInfoLogDetector:
+    """F层: 敏感数据(密码/token/密钥)被打印或写入日志"""
+    SENS = r'(?:password|passwd|pwd|secret|token|access[ _-]?key|api[ _-]?key)'
+    LOG = r'(?:printf|fprintf|sprintf|snprintf|debug|trace|log|cout)\s*\('
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            arg = re.search(rf'{self.LOG}[^)]*{self.SENS}', stripped, re.IGNORECASE)
+            if arg and not re.search(r'(?:\*\*+|mask|hash|\.  \* +|redact)', stripped, re.IGNORECASE):
+                findings.append({
+                    'event_id': f'C_SENS_LOG_{i+1}', 'line': i+1, 'severity': 'P2',
+                    'category': 'F_ERROR',
+                    'description': f'敏感信息可能被写入日志/输出: {stripped[:80]}',
+                    'causal_chain': f'P[sensitive] -> E[log/print] -> F[信息泄露]',
+                    'suggestion': '不要直接输出敏感字段，改为打掩码或哈希',
+                })
+        return findings
+
+
+class CSilentErrorBranchDetector:
+    """F层: 空错误分支 if(err){ } 静默吞掉错误"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if re.search(r'if\s*\([^)]*\b(err|fail|ret|rc|result|status)\b[^)]*\)\s*\{\s*\}', stripped):
+                findings.append({
+                    'event_id': f'C_SILENT_ERR_{i+1}', 'line': i+1, 'severity': 'P1',
+                    'category': 'F_ERROR',
+                    'description': f'空错误分支，错误被静默丢弃: {stripped[:80]}',
+                    'causal_chain': f'P[error] -> E[empty branch] -> F[状态不一致]',
+                    'suggestion': '错误分支内应记录日志或做恢复/返回处理',
+                })
+        return findings
+
+
+class CUnprotectedContinueDetector:
+    """F层: 错误时仅 continue 跳过，未做任何处理"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if re.search(r'if\s*\([^)]*\b(err|fail|rc|ret|result)\b[^)]*\)\s*\{', stripped):
+                # 单行块内含 continue
+                if re.search(r'if\s*\([^)]*\b(err|fail|rc|ret|result)\b[^)]*\)\s*\{[^}]*\bcontinue\s*;', stripped):
+                    findings.append({
+                        'event_id': f'C_ERR_CONTINUE_{i+1}', 'line': i+1, 'severity': 'P1',
+                        'category': 'F_ERROR',
+                        'description': f'错误分支仅 continue 跳过，未记录/计数: {stripped[:80]}',
+                        'causal_chain': f'P[error] -> E[continue] -> F[错误被静默跳过]',
+                        'suggestion': 'continue 前做计数/日志/失败聚合处理',
+                    })
+                else:
+                    # 多行: 向后找 continue
+                    depth = 0
+                    for j in range(i, min(i + 12, len(lines))):
+                        depth += lines[j].count('{') - lines[j].count('}')
+                        if re.search(r'\bcontinue\s*;', lines[j]) and depth <= 1:
+                            findings.append({
+                                'event_id': f'C_ERR_CONTINUE_{i+1}', 'line': i+1, 'severity': 'P1',
+                                'category': 'F_ERROR',
+                                'description': f'错误分支仅 continue 跳过，未记录/计数: {stripped[:60]}',
+                                'causal_chain': f'P[error] -> E[continue] -> F[错误被静默跳过]',
+                                'suggestion': 'continue 前做计数/日志/失败聚合处理',
+                            })
+                            break
+                        if depth <= 0:
+                            break
+        return findings
+
+
+class CErrorCodeNotPropagatedDetector:
+    """F层: ret=foo(...) 后 if(ret) 分支未向上返回错误码"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            m = re.search(r'\((ret|rc|status|err|result)\s*\)\s*=\s*\w+\s*\([^)]*\)', line)
+            if not m:
+                m = re.search(r'\b(ret|rc|status|err|result)\s*=\s*\w+\s*\([^)]*\)', line)
+            if not m:
+                continue
+            var = m.group(1)
+            for j in range(i + 1, min(i + 8, len(lines))):
+                if re.search(rf'if\s*\(\s*!?\s*{var}\b', lines[j]):
+                    block_tail = ''.join(lines[j:j + 8])
+                    if not re.search(r'\b(?:return|goto|throw|abort)\b', block_tail):
+                        findings.append({
+                            'event_id': f'C_ERR_CODE_DROP_{i+1}', 'line': i + 1, 'severity': 'P1',
+                            'category': 'F_ERROR',
+                            'description': f'错误路径未向上传递错误码(无return/goto/throw): {lines[j].strip()[:60]}',
+                            'causal_chain': f'P[ret] -> E[check but no propagate] -> F[上层无感知]',
+                            'suggestion': '错误分支 return 错误码 / goto error标签',
+                        })
+                    break
+        return findings
+
+
+class CCloseReturnIgnoredDetector:
+    """F层: fclose()/free() 返回值/结果被忽略（关闭/释放失败未感知）"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if re.match(r'^\s*(?:fclose|fcloseall)\s*\([^)]*\)\s*;', stripped) and '=' not in stripped:
+                findings.append({
+                    'event_id': f'C_CLOSE_IGNORE_{i+1}', 'line': i + 1, 'severity': 'P2',
+                    'category': 'F_ERROR',
+                    'description': f'fclose() 返回值被忽略: {stripped[:80]}',
+                    'causal_chain': f'P[fclose] -> E[ignore] -> F[写盘失败/数据截断不可见]',
+                    'suggestion': '检查 fclose() != 0（写尾失败）',
+                })
+        return findings
+
+
+class CErrorPathNoReturnDetector:
+    """F层: 错误分支进入后无出口(return/goto/abort)，可能落入错误状态继续执行"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if re.search(r'if\s*\([^)]*\b(error|err)\b[^)]*\)\s*\{', line):
+                block = ''.join(lines[i:i + 10])
+                if not re.search(r'\b(?:return|goto|abort|exit|break|continue)\b', block):
+                    findings.append({
+                        'event_id': f'C_ERR_NO_RETURN_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'F_ERROR',
+                        'description': f'错误分支无出口(return/goto/abort): {line.strip()[:60]}',
+                        'causal_chain': f'P[error] -> E[no exit] -> F[错误状态继续执行]',
+                        'suggestion': '错误分支必须 return/goto 终止或显式恢复',
+                    })
+        return findings
+
+
+class CPanicAbortDetector:
+    """F层: panic()/abort() 裸调用，无错误文案/日志上下文"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            if re.search(r'\b(?:panic|abort)\s*\(', stripped) and not re.search(r'(?:panic|abort)f?\s*\(\s*["\']\w+', stripped):
+                findings.append({
+                    'event_id': f'C_PANIC_ABORT_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'F_ERROR',
+                    'description': f'panic/abort 裸调用，无上下文: {stripped[:80]}',
+                    'causal_chain': f'P[unexpected] -> E[panic/abort] -> F[进程崩溃无诊断]',
+                    'suggestion': '终止前先记录错误原因/日志',
+                })
+        return findings
+
+
+# ---------- E层 控制流 (category=E_CONTROL) ----------
+
+class CCaseFallThroughDetector:
+    """E层: switch case 尾无 break/return 导致穿透"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if re.match(r'\s*case\s+\w+\s*:', line.strip()):
+                body = []
+                for j in range(i + 1, len(lines)):
+                    if re.match(r'\s*(?:case\s+\w+\s*:|default\s*:|})', lines[j]):
+                        break
+                    body.append(lines[j])
+                if body and not re.search(r'\b(?:break|return|goto|throw|continue)\b', '\n'.join(body)):
+                    findings.append({
+                        'event_id': f'C_CASE_FALLTHROUGH_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'E_CONTROL',
+                        'description': f'switch case 缺 break/return，存在穿透: {line.strip()[:60]}',
+                        'causal_chain': f'P[case] -> E[no break] -> F[穿透执行]',
+                        'suggestion': 'case 尾部加 break/return，或显式标注 [[fallthrough]]',
+                    })
+        return findings
+
+
+class CInfiniteWhileDetector:
+    """E层: while(1)/while(true) 前向无 break 退出口"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if re.search(r'while\s*\(\s*(?:1|true|TRUE)\s*\)\s*\{', line):
+                window = '\n'.join(lines[i + 1:i + 16])
+                if 'break' not in window:
+                    findings.append({
+                        'event_id': f'C_WHILE_1_{i + 1}', 'line': i + 1, 'severity': 'P2',
+                        'category': 'E_CONTROL',
+                        'description': f'while(1) 循环 15 行内未见 break: {line.strip()[:60]}',
+                        'causal_chain': f'P[loop] -> E[no exit] -> F[死循环/阻塞]',
+                        'suggestion': '为退出设置 break/bool 标志，避免恒循环',
+                    })
+        return findings
+
+
+class CUnboundedLoopDetector:
+    """E层: 循环体内 continue 且无进展语句(自增/自减)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if re.search(r'(?:while|for)\s*\([^)]*\)\s*\{', line):
+                window = '\n'.join(lines[i:i + 25])
+                if re.search(r'\bcontinue\s*;', window) and not re.search(r'\+\+|--|\+=|-=', window):
+                    findings.append({
+                        'event_id': f'C_CONTINUE_INF_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'E_CONTROL',
+                        'description': f'循环含 continue 但无进展语句，可能不收敛: {line.strip()[:60]}',
+                        'causal_chain': f'P[loop] -> E[continue no progress] -> F[不终止]',
+                        'suggestion': '确保 continue 前推进循环变量',
+                    })
+        return findings
+
+
+class CUnboundedRecursionDetector:
+    """E层: 递归函数体内无终止基例(if(...) return)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            m = re.search(r'\b(\w+)\s*\([^)]*\)\s*\{', line)
+            if not m:
+                continue
+            fname = m.group(1)
+            if fname in ('if', 'for', 'while', 'switch'):
+                continue
+            body = ''.join(lines[i:i + 60])
+            if re.search(rf'\b{fname}\s*\(', body[i + len(line):]) and not re.search(r'if\s*\([^)]*\)\s*\{[^}]*\breturn\b', body):
+                findings.append({
+                    'event_id': f'C_RECURSION_NO_BASE_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'E_CONTROL',
+                    'description': f'递归函数 {fname} 未见终止基例(if+return): {line.strip()[:60]}',
+                    'causal_chain': f'P[self call] -> E[no base case] -> F[栈溢出]',
+                    'suggestion': '为递归增加基例判断 (if (base) return ...)',
+                })
+        return findings
+
+
+class CGoToAbuseDetector:
+    """E层: goto 滥用(文件中 goto 出现 >2 次)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        gotos = [i for i, l in enumerate(lines) if re.search(r'\bgoto\s+\w+\s*;', l)]
+        if len(gotos) > 2:
+            findings.append({
+                'event_id': f'C_GOTO_ABUSE_{gotos[0] + 1}', 'line': gotos[0] + 1, 'severity': 'P2',
+                'category': 'E_CONTROL',
+                'description': f'goto 使用过多({len(gotos)} 处)，破坏结构化控制流',
+                'causal_chain': f'P[goto] -> E[spaghetti] -> F[难维护/难验证]',
+                'suggestion': '用函数/错误标签替代过多 goto',
+            })
+        return findings
+
+
+class CEmptyBranchDetector:
+    """E层: 空 if/else 分支"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if re.search(r'(?:if|else)\s*\([^)]*\)?\s*\{\s*\}', stripped) or re.search(r'else\s*\{\s*\}', stripped):
+                findings.append({
+                    'event_id': f'C_EMPTY_BRANCH_{i + 1}', 'line': i + 1, 'severity': 'P2',
+                    'category': 'E_CONTROL',
+                    'description': f'空分支(if/else),逻辑缺失: {stripped[:80]}',
+                    'causal_chain': f'P[?] -> E[empty branch] -> F[该路径无行为]',
+                    'suggestion': '补全分支逻辑或移除空块',
+                })
+        return findings
+
+
+# ---------- E层 资源 (category=E_RESOURCE) ----------
+
+class CAllocPathLeakDetector:
+    """E层: malloc 后错误分支 return 时未 free(错误路径泄漏)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            m = re.search(r'(\w+)\s*=\s*(?:\([^)]*\)\s*)?malloc\s*\(', line)
+            if not m:
+                continue
+            var = m.group(1)
+            for j in range(i + 1, min(i + 12, len(lines))):
+                if re.search(r'if\s*\([^)]*\)', lines[j]) and re.search(r'\breturn\b', ''.join(lines[j:j + 3])):
+                    if not re.search(rf'\bfree\s*\(\s*{var}\s*\)', ''.join(lines[i + 1:j + 4])):
+                        findings.append({
+                            'event_id': f'C_ALLOC_PATH_LEAK_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                            'category': 'E_RESOURCE',
+                            'description': f'malloc 错误路径 return 未释放 {var}: {lines[j].strip()[:60]}',
+                            'causal_chain': f'P[malloc] -> E[err return no free] -> F[内存泄漏]',
+                            'suggestion': '错误分支先 free(var) 再 return',
+                        })
+                    break
+        return findings
+
+
+class CMutexErrorUnlockDetector:
+    """E层(P0): 函数内锁定后错误路径 return 前未解锁"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if not re.search(r'pthread_mutex_lock\s*\(', line):
+                continue
+            for j in range(i + 1, min(i + 40, len(lines))):
+                if re.search(r'\b(?:return|goto)\b', lines[j]) and not re.search(r'pthread_mutex_unlock\s*\(', ''.join(lines[i + 1:j])):
+                    findings.append({
+                        'event_id': f'C_MUTEX_UNLOCK_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                        'category': 'E_RESOURCE',
+                        'description': f'锁定后错误/正常路径 return 前未解锁: {lines[j].strip()[:60]}',
+                        'causal_chain': f'P[lock] -> E[return no unlock] -> F[死锁/锁泄漏]',
+                        'suggestion': 'return 前先 pthread_mutex_unlock 或 RAII 守卫',
+                    })
+                    break
+        return findings
+
+
+class CDbConnectionLeakDetector:
+    """E层: 数据库连接打开后前40行未见关闭"""
+    DB_OPEN = r'(?:sqlite3_open|mysql_init|mysql_real_connect|PQconnectdb|db_connect|sqlite3_open_v2)\s*\('
+    DB_CLOSE = r'(?:sqlite3_close|mysql_close|PQfinish|db_close|deinit)'
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            m = re.search(r'(\w+)\s*=\s*[^;]*' + self.DB_OPEN, line)
+            if not m:
+                continue
+            var = m.group(1)
+            window = '\n'.join(lines[i + 1:i + 41])
+            if not re.search(self.DB_CLOSE + r'|' + rf'{re.escape(var)}\.close\s*\)', window):
+                findings.append({
+                    'event_id': f'C_DB_LEAK_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'E_RESOURCE',
+                    'description': f'数据库连接打开后 40 行内未见关闭: {line.strip()[:60]}',
+                    'causal_chain': f'P[db_open] -> E[no close] -> F[连接泄漏]',
+                    'suggestion': '确保所有路径关闭数据库连接',
+                })
+        return findings
+
+
+# ---------- MOD层 契约 (category=MOD_CONTRACT) ----------
+
+class CHardcodedWhitelistDetector:
+    """MOD层: 硬编码白名单/黑名单数据(数组字面量)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if re.search(r'(?:allowed|whitelist|blocklist|denylist|grace)\w*\s*(?:\[[^]]*\]\s*)?=\s*\{', stripped, re.IGNORECASE):
+                findings.append({
+                    'event_id': f'C_HARDCODE_WHL_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'MOD_CONTRACT',
+                    'description': f'硬编码名单(白/黑名单)字面量: {stripped[:80]}',
+                    'causal_chain': f'P[literal list] -> E[hard coded] -> F[不可配置/难维护]',
+                    'suggestion': '名单移入配置文件/常量表，避免硬编码',
+                })
+        return findings
+
+
+class CInputNotSanitizedDetector:
+    """MOD层: 危险字符串函数直接拼接外部输入且前向无净化"""
+    DANGER = rb'strcpy|strcat|sprintf'
+    USER = rb'argv|input|user|data|req|param|query|buf|cmd'
+
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            if re.search(r'(?:strcpy|strcat|sprintf)\s*\([^,]*,\s*\w', line):
+                # 前向是否有净化/长度校验
+                before = '\n'.join(lines[max(0, i - 6):i])
+                if not re.search(r'(?:sanitize|strip|strn|snprint|bound|check|validate|sscanf)', before, re.IGNORECASE):
+                    findings.append({
+                        'event_id': f'C_INPUT_UNSANITIZED_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'MOD_CONTRACT',
+                        'description': f'字符串拼接外部输入且未见净化/长度校验: {line.strip()[:70]}',
+                        'causal_chain': f'P[input] -> E[unsafe concat] -> F[溢出/注入]',
+                        'suggestion': '使用 strncpy/snprintf 并做输入清洗',
+                    })
+        return findings
+
+
+class CMagicNumberDetector:
+    """MOD层: 裸魔法数字(≥3位)用于比较/赋值"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            if re.search(r'if\s*\([^)]*\b(?:==|>=|<=|>|<)\s*\d{3,}\b', stripped):
+                mag = re.search(r'(?:==|>=|<=|>|<)\s*(\d{3,})', stripped)
+                findings.append({
+                    'event_id': f'C_MAGIC_NUM_{i + 1}', 'line': i + 1, 'severity': 'P2',
+                    'category': 'MOD_CONTRACT',
+                    'description': f'裸魔法数字 {mag.group(1) if mag else ""} 参与比较: {stripped[:70]}',
+                    'causal_chain': f'P[magic] -> E[compare] -> F[语义不明/难改]',
+                    'suggestion': '用具名常量替代魔法数字',
+                })
+        return findings
+
+
+class CHardcodedEndpointDetector:
+    """MOD层: 硬编码 IP/端口/URL 端点"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            if re.search(r'\d{1,3}(?:\.\d{1,3}){3}\s*[:"]', stripped) or re.search(r'https?://[^\s"\' ]+', stripped):
+                findings.append({
+                    'event_id': f'C_HARDCODE_EP_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'MOD_CONTRACT',
+                    'description': f'硬编码端点(IP/URL): {stripped[:80]}',
+                    'causal_chain': f'P[literal endpoint] -> E[hard coded] -> F[不可配置/信息泄漏]',
+                    'suggestion': '端点移入配置，避免硬编码 IP/URL',
+                })
+        return findings
+
+
+class CWeakCryptoDetector:
+    """MOD层: 弱加密算法/危险默认权限"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        for i, line in enumerate(source.split('\n')):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            if re.search(r'\b(?:MD5|SHA1|DES|arc4|rc4|rand\s*\()', stripped, re.IGNORECASE) or re.search(r'chmod\s*\([^)]*\b(?:0?666|0?777|0777|0666)\b', stripped):
+                findings.append({
+                    'event_id': f'C_WEAK_CRYPTO_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'MOD_CONTRACT',
+                    'description': f'疑似弱加密算法或危险默认权限: {stripped[:80]}',
+                    'causal_chain': f'P[weak crypto] -> E[use] -> F[安全弱点]',
+                    'suggestion': '使用 SHA-256/AES/西利随机源，收紧文件权限',
+                })
+        return findings
+
+
 # ============================================================
 # 统一入口
 # ============================================================
@@ -529,14 +1018,39 @@ ALL_OPERATORS = [
     RaceConditionDetector(),
     DangerousFunctionDetector(),
     MallocNullCheckDetector(),
+    # ---- P1 L6 (Task6): F/E/MOD 层新增 ----
+    CReturnValueIgnoredDetector(),
+    CSensitiveInfoLogDetector(),
+    CSilentErrorBranchDetector(),
+    CUnprotectedContinueDetector(),
+    CErrorCodeNotPropagatedDetector(),
+    CCloseReturnIgnoredDetector(),
+    CErrorPathNoReturnDetector(),
+    CPanicAbortDetector(),
+    CCaseFallThroughDetector(),
+    CInfiniteWhileDetector(),
+    CUnboundedLoopDetector(),
+    CUnboundedRecursionDetector(),
+    CGoToAbuseDetector(),
+    CEmptyBranchDetector(),
+    CAllocPathLeakDetector(),
+    CMutexErrorUnlockDetector(),
+    CDbConnectionLeakDetector(),
+    CHardcodedWhitelistDetector(),
+    CInputNotSanitizedDetector(),
+    CMagicNumberDetector(),
+    CHardcodedEndpointDetector(),
+    CWeakCryptoDetector(),
 ]
 
 def run_pef_operators(source_code: str) -> List[Dict]:
-    """运行全部11个PEF算子并返回合并的发现列表"""
+    """运行全部PEF算子并返回合并的发现列表（每条 finding 标记算子来源 source）"""
     all_findings = []
     for op in ALL_OPERATORS:
         try:
             findings = op.detect(source_code)
+            for f in findings:
+                f["source"] = op.__class__.__name__  # Task8: 独立证据源辨识
             all_findings.extend(findings)
         except (TypeError, ValueError, RuntimeError, OSError, KeyError, IndexError) as e:
             all_findings.append({
@@ -554,5 +1068,13 @@ __all__ = [
     'BufferOverflowDetector', 'UninitMemoryDetector', 'ResourceLeakDetector',
     'IntegerOverflowDetector', 'PathCoverageAnalyzer', 'RaceConditionDetector',
     'DangerousFunctionDetector', 'MallocNullCheckDetector',
+    'CReturnValueIgnoredDetector', 'CSensitiveInfoLogDetector', 'CSilentErrorBranchDetector',
+    'CUnprotectedContinueDetector', 'CErrorCodeNotPropagatedDetector', 'CCloseReturnIgnoredDetector',
+    'CErrorPathNoReturnDetector', 'CPanicAbortDetector', 'CCaseFallThroughDetector',
+    'CInfiniteWhileDetector', 'CUnboundedLoopDetector', 'CUnboundedRecursionDetector',
+    'CGoToAbuseDetector', 'CEmptyBranchDetector', 'CAllocPathLeakDetector',
+    'CMutexErrorUnlockDetector', 'CDbConnectionLeakDetector', 'CHardcodedWhitelistDetector',
+    'CInputNotSanitizedDetector', 'CMagicNumberDetector', 'CHardcodedEndpointDetector',
+    'CWeakCryptoDetector',
     'run_pef_operators', 'ALL_OPERATORS'
 ]

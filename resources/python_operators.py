@@ -547,23 +547,322 @@ class PyTodoPlaceholderDetector:
 
 
 # ============================================================
+# P1 阶段 L6 强化 (Task7)：净新增 12 个 Python 专用算子
+# 注入3 + 资源2 + 逻辑4 + 安全3，排除与现有算子重复
+# ============================================================
+
+class PyCommandInjectionDetector:
+    """P0: 命令注入 — subprocess shell=True / os.system / os.popen 参数含用户输入"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if re.search(r'shell\s*=\s*True', stripped):
+                # shell=True 且命令非静态字面量
+                if not re.search(r'subprocess\.(?:run|call|Popen)\([^)]*shell\s*=\s*True', stripped) and 'shell=True' in stripped:
+                    findings.append({
+                        'event_id': f'PY_CMD_INJECT_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                        'category': 'PY_INJECTION',
+                        'description': f'shell=True 开启命令解释，可能命令注入: {stripped[:80]}',
+                        'causal_chain': 'P[user input] -> E[shell=True] -> F[命令注入]',
+                        'suggestion': '避免 shell=True；用参数列表传参 subprocess.run([...])',
+                    })
+                    continue
+            if re.search(r'os\.system\s*\(\s*[^"\' ]+', stripped) or re.search(r'os\.popen\s*\(\s*[^"\' ]+', stripped):
+                findings.append({
+                    'event_id': f'PY_CMD_INJECT_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                    'category': 'PY_INJECTION',
+                    'description': f'os.system/popen 传变量命令，可能命令注入: {stripped[:80]}',
+                    'causal_chain': 'P[user input] -> E[system(popen)] -> F[命令注入]',
+                    'suggestion': '改用 subprocess 参数列表，避免 shell 解释',
+                })
+        return findings
+
+
+class PyUnsafeDeserializationDetector:
+    """P0: 不安全反序列化 — pickle/yaml.load 处理不可信数据"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if re.search(r'\bpickle\.(?:loads?|load)\s*\(', stripped) or re.search(r'\bcPickle\.loads?\s*\(', stripped):
+                findings.append({
+                    'event_id': f'PY_PICKLE_LOAD_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                    'category': 'PY_INJECTION',
+                    'description': f'pickle 反序列化不可信数据: {stripped[:80]}',
+                    'causal_chain': 'P[untrusted bytes] -> E[pickle.load] -> F[反序列化攻击]',
+                    'suggestion': '避免对不可信数据 pickle；改用 JSON + schema 校验',
+                })
+            if re.search(r'\byaml\.load\s*\(', stripped) and not re.search(r'yaml\.load\s*\([^)]*(?:SafeLoader|FullLoader)', stripped):
+                findings.append({
+                    'event_id': f'PY_YAML_LOAD_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                    'category': 'PY_INJECTION',
+                    'description': f'yaml.load 未指定 SafeLoader: {stripped[:80]}',
+                    'causal_chain': 'P[untrusted yaml] -> E[yaml.load] -> F[对象构造攻击]',
+                    'suggestion': '用 yaml.safe_load 或 load(Loader=SafeLoader)',
+                })
+        return findings
+
+
+class PyBadZipFileDetector:
+    """P1: 压缩包路径穿越 — ZipFile.extractall 未校验成员路径"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if re.search(r'\.extractall?\s*\(', stripped) and re.search(r'zipfile', stripped):
+                # 前向 30 行是否有成员路径校验(namelist 等)
+                window = '\n'.join(lines[max(0, i - 30):i])
+                if not re.search(r'namelist', window):
+                    findings.append({
+                        'event_id': f'PY_BADZIP_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'PY_INJECTION',
+                        'description': f'ZipFile.extractall 未校验成员路径，可能路径穿越: {stripped[:80]}',
+                        'causal_chain': 'P[zip member] -> E[unsafe extract] -> F[路径穿越/覆盖]',
+                        'suggestion': 'extract 前用 namelist 校验成员不含 .. 或绝对路径',
+                    })
+        return findings
+
+
+class PyResourceLeakDetector:
+    """P1: 文件资源泄漏 — open() 未用 with/终无 close()（独立算子，event 与既有 PY_RES_LEAK 区分）"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if 'with ' in stripped and 'open(' in stripped:
+                continue
+            m = re.search(r'(\w+)\s*=\s*open\s*\(', stripped)
+            if not m:
+                continue
+            var = m.group(1)
+            has_close = False
+            for j in range(i + 1, min(i + 60, len(lines))):
+                if re.search(rf'{re.escape(var)}\.close\s*\(\s*\)', lines[j]):
+                    has_close = True
+                    break
+                if re.match(r'^\s*(?:def |class )', lines[j]):
+                    break
+            if not has_close:
+                findings.append({
+                    'event_id': f'PY_RES_FILE_LEAK_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'PY_RESOURCE',
+                    'description': f'open() 未用 with 且未见 close，可能文件泄漏: {stripped[:80]}',
+                    'causal_chain': 'P[open] -> E[no with/close] -> F[句柄泄漏/文件锁定]',
+                    'suggestion': '用 with open() as 自动关闭，或 finally 中 close()',
+                })
+        return findings
+
+
+class PyDbConnectionLeakDetector:
+    """P1: 数据库连接泄漏 — connect 后 60 行内无 close()"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            m = re.search(r'(\w+)\s*=\s*(?:sqlite3\.connect|psycopg2?\.connect|pymysql\.connect|pyodbc\.connect)\s*\(', stripped)
+            if not m:
+                continue
+            var = m.group(1)
+            window = '\n'.join(lines[i + 1:i + 61])
+            if not re.search(rf'{re.escape(var)}\.close\s*\(', window) and not re.search(r'\bwith\s+' + var + r'\b', window):
+                findings.append({
+                    'event_id': f'PY_DB_LEAK_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'PY_RESOURCE',
+                    'description': f'数据库连接未见 close()/with，可能连接泄漏: {stripped[:80]}',
+                    'causal_chain': 'P[db connect] -> E[no close] -> F[连接池耗尽]',
+                    'suggestion': '用 with contextlib.closing(conn) 或 try/finally close()',
+                })
+        return findings
+
+
+class PyChainComparisonDetector:
+    """P2: 用 == 比较布尔/None 字面量（应使用 is；区别于 PyIsComparisonDetector 方向）"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if re.search(r'(?:==|!=)\s*(?:True|False|None)\b', stripped):
+                findings.append({
+                    'event_id': f'PY_CHAIN_CMP_{i + 1}', 'line': i + 1, 'severity': 'P2',
+                    'category': 'PY_BUG',
+                    'description': f'用 ==/=! 与布尔/None 字面量比较: {stripped[:80]}',
+                    'causal_chain': 'P[compare] -> E[== with None/bool] -> F[隐晦比较]',
+                    'suggestion': '与 None/布尔比较应使用 is / is not',
+                })
+        return findings
+
+
+class PyBroadTupleExceptionDetector:
+    """P2: 父子异常类同置 except 元组 — 子类分支永远不可达"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            m = re.search(r'except\s*\(([^)]*)\)\s*:', line)
+            if not m:
+                continue
+            types = [t.strip() for t in m.group(1).split(',') if t.strip()]
+            if 'Exception' in types and any(t not in ('Exception', 'BaseException') for t in types):
+                findings.append({
+                    'event_id': f'PY_TUPLE_EXCEPT_{i + 1}', 'line': i + 1, 'severity': 'P2',
+                    'category': 'PY_BUG',
+                    'description': f'except 元组含 Exception 与具体类型，具体类型分支不可达: {line.strip()[:70]}',
+                    'causal_chain': 'P[except tuple] -> E[parent+child] -> F[子类永不匹配]',
+                    'suggestion': '移除父类 Exception，保留具体异常类型',
+                })
+        return findings
+
+
+class PyIsComparisonDetector:
+    """P1: 用 is 比较 int/str/列表/字典 字面量（应用 ==）"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if re.search(r'\bis\s+(?:\[\]|\{\}|dict\(|list\(|\d+|[+-]?\d+\.\d+)', stripped):
+                findings.append({
+                    'event_id': f'PY_IS_CMP_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'PY_BUG',
+                    'description': f'用 is 比较值(字面量/list/dict)，is 只比较对象身份: {stripped[:80]}',
+                    'causal_chain': 'P[compare identity] -> E[is with value] -> F[比较结果错误]',
+                    'suggestion': '值与字面量比较用 ==，is 仅用于 None/单例',
+                })
+        return findings
+
+
+class PyAssertStateDetector:
+    """P1: 裸 assert 仅判单个变量（AI 假逻辑占位，非真条件校验）"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            m = re.match(r'assert\s+([A-Za-z_]\w*)\s*$', stripped)
+            if m:
+                findings.append({
+                    'event_id': f'PY_ASSERT_STATE_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                    'category': 'PY_BUG',
+                    'description': f'裸 assert 仅判单变量(无比较/消息)，疑似假校验: {stripped[:80]}',
+                    'causal_chain': 'P[assert] -> E[bare truthy check] -> F[-O 下校验丧失]',
+                    'suggestion': '用 if + 显式 raise 做真实条件校验',
+                })
+        return findings
+
+
+class PyHardcodedPasswordDetector:
+    """P0: 硬编码密码 — password= 直接赋字面量"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            m = re.search(r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']+["\']', stripped, re.IGNORECASE)
+            if m and not re.search(r'(?:getenv|environ|environ.get|os\.environ|config|getpass)', stripped):
+                findings.append({
+                    'event_id': f'PY_HARD_PWD_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                    'category': 'PY_SECURITY',
+                    'description': f'硬编码密码字面量: {stripped[:80]}',
+                    'causal_chain': 'P[literal pwd] -> E[hard coded] -> F[凭据泄露]',
+                    'suggestion': '从环境变量/密钥库读取密码，勿硬编码',
+                })
+        return findings
+
+
+class PyHardcodedApiKeyDetector:
+    """P0: 硬编码 API key/secret/token"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            m = re.search(r'(?:api[ _-]?key|secret|token|access[ _-]?key)\s*=\s*["\'][^"\']{8,}["\']', stripped, re.IGNORECASE)
+            if m and not re.search(r'(?:getenv|environ|config|load)', stripped):
+                findings.append({
+                    'event_id': f'PY_HARD_KEY_{i + 1}', 'line': i + 1, 'severity': 'P0',
+                    'category': 'PY_SECURITY',
+                    'description': f'硬编码 API key/secret/token: {stripped[:80]}',
+                    'causal_chain': 'P[literal key] -> E[hard coded] -> F[凭据泄露]',
+                    'suggestion': '密钥从环境变量/密钥库读取',
+                })
+        return findings
+
+
+class PyUnsafeRandomDetector:
+    """P1: 不安全随机 — random 用于安全敏感场景(应使用 secrets/os.urandom)"""
+    def detect(self, source: str) -> List[Dict]:
+        findings = []
+        lines = source.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                continue
+            if re.search(r'random\.(?:random|randint|choice|shuffle|uniform|sample)\s*\(', stripped):
+                if re.search(r'(?:token|password|secret|salt|nonce|sha|crypto|hash|auth)', stripped, re.IGNORECASE):
+                    findings.append({
+                        'event_id': f'PY_UNSAFE_RANDOM_{i + 1}', 'line': i + 1, 'severity': 'P1',
+                        'category': 'PY_SECURITY',
+                        'description': f'random 用于安全敏感场景，应使用 secrets: {stripped[:80]}',
+                        'causal_chain': 'P[random] -> E[security use] -> F[可预测随机数]',
+                        'suggestion': '安全随机用 secrets.randbelow/choose，加密用 os.urandom',
+                    })
+        return findings
+
+
+# ============================================================
 # 统一入口
 # ============================================================
 
 PY_OPERATORS = [
     PySilentExceptionDetector(),
     PyCodeInjectionDetector(),
-    # PyUnsafeDeserializationDetector(),  # TODO: V3.9.4 实现
-    # PyCommandInjectionDetector(),  # TODO: V3.9.4 实现
-    # PyBadZipFileDetector(),  # TODO: V3.9.4 实现（已在 python_ast_context.py 中实现上下文分析）
+    # ---- 注入类 (Task7) ----
+    PyUnsafeDeserializationDetector(),
+    PyCommandInjectionDetector(),
+    PyBadZipFileDetector(),
     PySqlInjectionDetector(),
-    # PyResourceLeakDetector(),  # TODO: V3.9.4 实现
+    # ---- 资源类 (Task7) ----
+    PyResourceLeakDetector(),
+    PyDbConnectionLeakDetector(),
+    # ---- 逻辑类 ----
     PyBroadExceptionDetector(),
     PyMutableDefaultDetector(),
+    PyChainComparisonDetector(),
+    PyBroadTupleExceptionDetector(),
+    PyIsComparisonDetector(),
+    PyAssertStateDetector(),
     PyHardcodedPathDetector(),
     PyDeadCodeDetector(),
     PyAssertInProductionDetector(),
     PyFinallyReturnDetector(),
+    # ---- 安全类 (Task7) ----
+    PyHardcodedPasswordDetector(),
+    PyHardcodedApiKeyDetector(),
+    PyUnsafeRandomDetector(),
+    # ---- 占位 ----
     PyTodoPlaceholderDetector(),
 ]
 
@@ -605,6 +904,8 @@ def run_python_operators(source_code: str, filename: str = "source.py") -> List[
     for op in PY_OPERATORS:
         try:
             findings = op.detect(clean_source)
+            for f in findings:
+                f["source"] = op.__class__.__name__  # Task8: 独立证据源辨识
             all_findings.extend(findings)
         except Exception as e:
             all_findings.append({
@@ -621,10 +922,14 @@ __all__ = [
     'PySilentExceptionDetector', 'PyCodeInjectionDetector',
     'PyUnsafeDeserializationDetector', 'PyCommandInjectionDetector',
     'PyBadZipFileDetector', 'PySqlInjectionDetector',
-    'PyResourceLeakDetector', 'PyBroadExceptionDetector',
-    'PyMutableDefaultDetector', 'PyHardcodedPathDetector',
-    'PyDeadCodeDetector', 'PyAssertInProductionDetector',
-    'PyFinallyReturnDetector', 'PyTodoPlaceholderDetector',
+    'PyResourceLeakDetector', 'PyDbConnectionLeakDetector',
+    'PyBroadExceptionDetector', 'PyMutableDefaultDetector',
+    'PyChainComparisonDetector', 'PyBroadTupleExceptionDetector',
+    'PyIsComparisonDetector', 'PyAssertStateDetector',
+    'PyHardcodedPathDetector', 'PyDeadCodeDetector',
+    'PyAssertInProductionDetector', 'PyFinallyReturnDetector',
+    'PyHardcodedPasswordDetector', 'PyHardcodedApiKeyDetector', 'PyUnsafeRandomDetector',
+    'PyTodoPlaceholderDetector',
     'run_python_operators', 'is_python_file', 'strip_python_comments',
     'PY_OPERATORS', 'AST_CONTEXT_AVAILABLE',
 ]

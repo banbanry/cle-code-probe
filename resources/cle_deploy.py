@@ -100,6 +100,8 @@ class CLEDeployer:
             findings = []
         else:
             findings = self._run_core_operators(stripped, source_code, pi_provider)
+            for _f in findings:
+                _f["source"] = "CORE"  # Task8: C 核心算子来源
 
         # PEF扩展算子 (11个E层算子，仅C/C++文件；Python有专用算子)
         if PEF_AVAILABLE and not is_python_file(filename):
@@ -116,10 +118,24 @@ class CLEDeployer:
         # 诚实边界: 跨函数BFS/别名/SANITIZER三级为设计文档完整版, 此处为可运行的最小真实引擎
         if not (PYTHON_AVAILABLE and is_python_file(filename)):
             taint_findings = self._run_taint_check(stripped)
+            for _f in taint_findings:
+                _f["source"] = "CORE"  # Task8
             findings.extend(taint_findings)
             # 跨函数污点 BFS (V3.8.2 第四阶段可运行版): scanf->step2->sink->system
             cross_findings = self._run_taint_cross_function(stripped)
+            for _f in cross_findings:
+                _f["source"] = "CORE"  # Task8
             findings.extend(cross_findings)
+
+        # Task8 收口聚合：置信分级 + 算子级冲突检测（LOW 只降级/分桶，不删除；不改 verdict）
+        try:
+            from ds_evidence_fusion import annotate_confidence, detect_conflict
+            findings = annotate_confidence(findings)
+            conflicts = detect_conflict(findings)
+            low_confidence_findings = [f for f in findings if f.get("low_confidence")]
+        except Exception:
+            conflicts = []
+            low_confidence_findings = []
 
         # 统计
         p0_count = sum(1 for f in findings if f.get("severity") == "P0")
@@ -128,6 +144,8 @@ class CLEDeployer:
         result["findings"] = findings
         result["p0_count"] = p0_count
         result["p1_count"] = p1_count
+        result["low_confidence_findings"] = low_confidence_findings
+        result["conflicts"] = conflicts
 
         # 裁决
         if p0_count > 0:
